@@ -1,0 +1,706 @@
+# Statistical testing
+
+Downloading Glinos *et al.* dataset (GTEx, PTBP1 knockexondown)
+
+```{r}
+#| eval: false
+library(here)
+# https://drive.google.com/file/d/1ATHgwFlIMmI651C5TYtiBxm2atTvbBYn/view?usp=sharing
+# counts
+url <- "https://drive.google.com/uc?export=download&id=1ATHgwFlIMmI651C5TYtiBxm2atTvbBYn"
+filename <- "quantification_flair_filter.counts.txt.gz"
+path <- here("data", filename)
+if (!file.exists(path)) {
+  download.file(url, path)
+}
+# GTF
+url <- "https://drive.google.com/uc?export=download&id=1S0TRXoXsfnXwJ0Dh5bLqVmyvFAAALFMU"
+filename <- "flair_filter_transcripts.gtf.gz"
+path <- here("data", filename)
+if (!file.exists(path)) {
+  download.file(url, path)
+}
+# metadata
+url <- "https://drive.google.com/uc?export=download&id=1LpYPXXhMtUV3vMG7SMLV69-JxZfc59o2"
+filename <- "glinos_metadata.csv"
+path <- here("data", filename)
+if (!file.exists(path)) {
+  download.file(url, path)
+}
+```
+
+Assembling the object:
+
+```{r}
+#| eval: false
+library(readr)
+library(dplyr)
+library(stringr)
+counts <- read_delim(here("data", "quantification_flair_filter.counts.txt.gz"))
+meta <- read_delim(here("data", "glinos_metadata.csv"))
+colnames(meta)[10] <- "total_reads"
+meta <- meta |>
+  mutate(condition = str_extract(sample_id, "(ctrl|exp)")) |>
+  select(sample_id, sample_name, condition, contains("read") | contains("3_prime")) |>
+  arrange(condition, sample_name)
+
+rnames <- counts$transcript
+counts <- as.matrix(counts[,meta$sample_id]) # subset to the knockdown
+rownames(counts) <- rnames
+```
+
+```{r}
+#| eval: false
+library(SummarizedExperiment)
+se <- SummarizedExperiment(list(counts = counts),
+                           colData = meta)
+saveRDS(se, file=here("data", "glinos_se.rds"))
+```
+
+```{r}
+#| message: false
+library(here)
+library(SummarizedExperiment)
+se <- readRDS(here("data", "glinos_se.rds"))
+keep <- rowSums(assay(se) >= 10) >= 6
+table(keep)
+se <- se[keep,]
+```
+
+```{r}
+#| include: false
+if (tryCatch(packageVersion("tximeta") < "1.25.1", error = function(e) TRUE)) {
+  message("installing dev version of tximeta")
+  remotes::install_github("thelovelab/tximeta")
+}
+set.seed(5) # for jittered plots
+```
+
+```{r}
+#| message: false
+library(DESeq2)
+library(tximeta)
+library(stringr)
+colsums <- colSums(assay(se, "counts"))
+cpm <- t(t(assay(se, "counts")) / colsums * 1e6)
+assay(se, "abundance") <- cpm
+assay(se, "length", withDimnames=FALSE) <- matrix(1000, nrow=nrow(se), ncol=ncol(se))
+se$condition <- factor(se$condition, c("ctrl","exp"))
+se_sub <- se[grepl("ENSG",rownames(se)),]
+tx2gene <- DataFrame(txid = rownames(se_sub),
+                     geneid = str_extract(rownames(se_sub), ".*_(ENSG.*)$", group=1))
+gse <- summarizeToGene(se_sub, tx2gene = tx2gene, skipRanges=TRUE)
+#saveRDS(gse, file=here("data","glinos_gene_counts.rds"))
+```
+
+```{r PCA}
+dds <- DESeqDataSet(gse, ~condition)
+keep <- rowSums(counts(dds) >= 10) >= 6
+table(keep)
+dds <- DESeq(dds, minRep=Inf)
+res <- results(dds)
+summary(res)
+```
+
+```{r glinos-plotcounts}
+library(org.Hs.eg.db)
+gene_anno <- DataFrame(geneid = str_extract(rownames(dds), "(ENSG.*)\\..*", group=1),
+                       baseMean = round(rowData(dds)$baseMean))
+gene_anno$symbol <- org.Hs.eg.db |> mapIds(gene_anno$geneid, "SYMBOL", "ENSEMBL")
+gene_anno$symbol[is.na(gene_anno$symbol)] <- gene_anno$geneid[is.na(gene_anno$symbol)]
+rowData(dds)$symbol <- gene_anno$symbol
+idx <- which(rowData(dds)$symbol == "PTBP1")
+plotCounts(dds, gene=idx)
+```
+
+```{r glinos-pca}
+vsd <- vst(dds, blind=FALSE)
+plotPCA(vsd)
+```
+
+```{r}
+#saveRDS(dds, file=here("data", "glinos_deseq2_gene.rds"))
+#saveRDS(vsd, file=here("data", "glinos_vst_gene.rds"))
+```
+
+```{r}
+#| eval: false
+library(Glimma)
+g <- glimmaMA(
+  dds,
+  groups=dds$condition,
+  anno=gene_anno[complete.cases(results(dds)),-1],
+  main="Glinos et al. (2022) - PTBP1 knockdown", # title above left summary plot
+  transform.counts="cpm",
+  test="Wald", name="condition_exp_vs_ctrl",
+  independentFiltering=FALSE,
+  cooksCutoff=FALSE
+)
+htmlwidgets::saveWidget(g, here("data","glinos_ma-plot.html"))
+```
+
+```{r}
+# DTU filter
+se <- se_sub # removed txps not associated with genes
+rowData(se)$gene_id <- tx2gene[,"geneid"]
+```
+
+```{r}
+#| message: false
+library(plyxp)
+xp <- se |>
+  new_plyxp()
+xp <- xp |>
+  mutate(rows(gene = str_extract(gene_id, "(ENSG.*)\\..*", group=1),
+              symbol = mapIds(org.Hs.eg.db, gene, "SYMBOL", "ENSEMBL"),
+              symbol = dplyr::case_when(
+                is.na(symbol) ~ gene,
+                TRUE ~ symbol
+              )))
+tab <- table(rowData(se)$gene_id)
+one_isoform_gene <- names(tab)[ tab == 1]
+xp <- xp |>
+  filter(rows(!gene_id %in% one_isoform_gene)) |>
+  arrange(rows(gene_id))
+```
+
+```{r}
+head(table(table(rowData(xp)$gene_id))) # confirm no single isoform genes
+```
+
+```{r}
+se <- se(xp)
+# needed for satuRn
+rowData(se)$isoform_id <- rownames(se)
+```
+
+```{r}
+# 5 seconds
+library(satuRn)
+se <- satuRn::fitDTU(se, formula=~0 + condition)
+```
+
+```{r}
+design <- model.matrix(~0 + condition, colData(se))
+colnames(design)
+colnames(design) <- levels(se$condition)
+L <- limma::makeContrasts(
+  exp_vs_ctrl = exp - ctrl,
+  levels = design
+)
+L # contrast matrix
+```
+
+```{r saturn-test}
+se <- satuRn::testDTU(
+  object = se,
+  contrasts = L,
+  diagplot1 = TRUE,
+  diagplot2 = TRUE
+)
+#saveRDS(se, file=here("data","glinos_saturn_dtu.rds"))
+```
+
+```{r}
+sig_res <- rowData(se)[["fitDTUResult_exp_vs_ctrl"]] |>
+  tibble::as_tibble() |>
+  dplyr::bind_cols(as.data.frame(rowData(se)[,1:4])) |>
+  dplyr::filter(empirical_FDR < .1) |>
+  dplyr::select(gene_id, isoform_id, symbol, estimates, empirical_pval, empirical_FDR) |>
+  dplyr::arrange(empirical_pval)
+#write.csv(sig_res, file=here("data","glinos_saturn_dtu.csv"), quote=FALSE, row.names=FALSE)
+sig_res
+```
+
+```{r}
+cpm <- assay(se, "abundance")[rowData(se)$symbol == "PDLIM7",]
+rownames(cpm) <- seq_len(nrow(cpm))
+colnames(cpm) <- se$condition
+round(cpm)
+```
+
+```{r}
+library(GenomicFeatures)
+#txdb <- makeTxDbFromGFF(here("data","flair_filter_transcripts.gtf.gz"))
+#saveDb(txdb, file=here("data","flair_filter_transcripts.sqlite"))
+txdb <- loadDb(here("data","flair_filter_transcripts.sqlite"))
+exons <- exonsBy(txdb, by="tx")
+txps <- AnnotationDbi::select(txdb, keys(txdb, "TXID"), c("TXNAME","GENEID"), "TXID") |>
+  tibble::as_tibble() |>
+  dplyr::mutate(TXID = as.character(TXID))
+```
+
+Now we have to do a little metadata cleanup to make everything easy to compare.
+
+First we clean up the isoform identifiers:
+
+```{r}
+sig_res <- sig_res |>
+  mutate(
+    isoform_id = str_replace(isoform_id, "(_ENSG.*?)_ENSG.*","\\1"),
+    isoform_id = str_replace(isoform_id, "(ENST.*?)_ENSG.*","\\1")
+  )
+```
+
+Next change the names of the exons:
+
+```{r}
+length(exons)
+all.equal(names(exons), txps$TXID)
+names(exons) <- txps$TXNAME
+
+
+```
+
+Plot gardener example
+
+```{r}
+library(plotgardener)
+tx_from_symbol <- sig_res %>%
+                  filter(symbol == "PDLIM7")%>%
+                  pull(isoform_id)
+tx_from_symbol
+
+exons[names(exons) %in% tx_from_symbol]
+
+
+db_assembly <- plotgardener::assembly(
+  Genome = "hg38",
+  TxDb = txdb,
+  OrgDb = org.Hs.eg.db,
+  gene.id.column = "GENEID",
+  display.column = "GENEID",
+  BSgenome = NULL
+)  
+
+
+library(plotgardener)
+library(org.Hs.eg.db)
+
+
+# Identify the gene of interest by its geneid given its symbol (selectizeInput)
+gene_of_interest <- "ENSG00000196923.13"
+
+# Extract genomic coordinates for the gene
+gene_coords <- genes(txdb, filter = list(GENEID = gene_of_interest))
+transcripts <- transcripts(txdb, filter = list(GENEID = gene_of_interest))
+
+# Extract chromosome, start, and end positions of the gene
+gene_chrom <- as.character(seqnames(gene_coords))
+gene_start <- min(start(gene_coords))
+gene_end <- max(end(gene_coords))
+
+# Define plotting parameters
+par <- pgParams(
+  chrom = gene_chrom, 
+  chromstart = gene_start, chromend = gene_end,
+  assembly = db_assembly, just = c("left", "bottom")
+)
+
+# Identify transcripts to highlight
+#tx_to_show <- transcripts%>% filter(tx_name %in% tx_from_symbol)
+
+#hilite <- data.frame(transcript = tx_to_show, color = "red")  
+
+# Dynamically adjust plot dimensions based on transcript count
+plotT_height <- round(50/4, 3)  # Height scales with transcript count
+page_height <- plotT_height + 1  
+page_width <- 10 
+
+
+# Create a new plotting page
+plotgardener::pageCreate(
+  width = page_width + 1, height = page_height, 
+  default.units = "inches", showGuides = FALSE
+)  
+
+# Plot transcripts with dynamic height 
+plotgardener::plotTranscripts(
+  params = par, 
+  x = 0.5, y = 0, width = page_width, height = plotT_height, 
+  just = c("left", "top"), default.units = "inches",
+  limitLabel = FALSE,
+  fontsize = 9,
+  labels = "transcript"
+)
+
+
+```
+
+# Get spliced exons and non-spliced exons
+
+```{r}
+library(plyranges)
+
+sig_exons <- exons[names(exons) %in% sig_res$isoform_id] #get GRangesList only from the DTUs
+sig_exons #59 transcripts GRangesList // 34 genes
+
+## for some reason im loosing 2 transcripts:
+setdiff(sig_res$isoform_id, names(sig_exons))
+# #add manually
+# sig_exons <- c(sig_exons, GRangesList(exons["59d5f69f-18ce-4229-b091-4f57cfde2e0c"]))
+# sig_exons <- c(sig_exons, GRangesList(exons["b79cfcbb-8d15-48df-9ace-12af97d8b32f"]))
+
+flat_sig_exons <- unlist(sig_exons)
+  
+tx_coefs <-  sig_res %>%
+  mutate(coef = ifelse(estimates > 0, "+", "-")) %>%
+  select(isoform_id, coef)
+
+
+#include coef +/- column from the DTU analysis saturn 
+flat_sig_exons$coef <- tx_coefs$coef[match(names(flat_sig_exons), tx_coefs$isoform_id)]
+#include gene name for each transcript name 
+flat_sig_exons$gene <- txps$GENEID[match(names(flat_sig_exons), txps$TXNAME)]            
+flat_sig_exons$TXID <- names(flat_sig_exons)
+
+# group by gene and coefficient, then project down to flatten version
+x_flat <-flat_sig_exons |>
+        group_by(gene, coef) |>
+        reduce_ranges_directed() 
+#exons overlap but are not exactly the same,  reduce_ranges()  will merge them into a single contiguous range that spans the union of all overlapping regions 
+# Overlapping exons → merged into a single continuous exon.
+# Non-overlapping exons → remain separate.
+
+x_flat$aux_id <- seq(length(x_flat))
+# take the flattened `+` exons and remove the flatted `-` exons --> result is exons spliced by PTBP1
+spliced_exons <-  x_flat |>
+                filter(coef == "+") |> # Selects only the flattened + strand exons
+                filter_by_non_overlaps( # Removes the parts that overlap with the - strand exons
+                  x_flat |> filter(coef == "-")
+                )
+length(spliced_exons) # n of spliced exons 
+length(unique(spliced_exons$gene)) # n of dif genes
+unique(spliced_exons$coef) # all should be + 
+
+
+non_spliced_exons <- x_flat |>
+  filter(!(aux_id %in% spliced_exons$aux_id)) 
+
+
+length(non_spliced_exons) # n of  exons 
+length(unique(non_spliced_exons$gene)) # n of dif genes
+unique(non_spliced_exons$coef) 
+
+
+table(x_flat$coef, useNA = "ifany")
+
+
+```
+
+\
+\
+
+Get upstream seq from all exons
+
+```{r}
+
+library(plyranges)
+
+upstr_spliced_exons <- spliced_exons %>%
+        flank_upstream(width =100) 
+# The result will be another GRanges object that still contains 158 ranges,
+# but each range now represents the upstream flanking region of the corresponding exon. 
+
+upstr_non_spliced_exons <- non_spliced_exons %>%
+        flank_upstream(width =100) 
+# The result will be another GRanges object that still contains 158 ranges,
+# but each range now represents the upstream flanking region of the corresponding exon. 
+```
+
+```{r}
+#| eval: false
+library(Biostrings)
+library(BSgenome)
+library(BSgenome.Hsapiens.UCSC.hg38)
+
+seq_spliced_exons <-  Hsapiens |>  ## RNAStringSet object of length 150:
+                       getSeq(upstr_spliced_exons) |>
+                       RNAStringSet()
+
+seq_non_spliced_exons <-  Hsapiens |>  ## RNAStringSet object of length 150:
+                       getSeq(upstr_non_spliced_exons) |>
+                       RNAStringSet()
+```
+
+Create features for ML from the exons upstream sequences
+
+```{r}
+library(IRanges)
+library(Biostrings)
+calc_bp_percentages_matrix <- function(dnaSet, window_size = 15) {
+  # Calculate percentages for each sequence in the DNAStringSet.
+  # Each element of window_list will be a matrix with rows = windows,
+  # and columns = "A", "C", "G", "T".
+  window_list <- lapply(dnaSet, function(seq) {
+    n <- nchar(seq)
+    if (n < window_size) return(NULL)  # return NULL if sequence is too short
+    starts <- 1:(n - window_size + 1)
+    windows <- IRanges(start = starts, width = window_size)
+    seq_views <- Views(seq, windows)
+    counts <- letterFrequency(seq_views, letters = c("A", "C", "G", "U"))
+    percentages <- 100 * counts / window_size
+    rownames(percentages) <- paste0("Window_", starts)
+    return(percentages)
+  })
+  
+  # Remove any NULLs (if some sequences were too short)
+  valid_idx <- sapply(window_list, function(x) !is.null(x))
+  window_list <- window_list[valid_idx]
+  seq_names <- names(dnaSet)[valid_idx]
+  
+  # Find the maximum number of windows across all sequences
+  max_windows <- max(sapply(window_list, nrow))
+  
+  # Create empty matrices (one per nucleotide) with rows = sequences and columns = windows.
+  nuc_list <- list(
+    A = matrix(NA, nrow = length(window_list), ncol = max_windows),
+    C = matrix(NA, nrow = length(window_list), ncol = max_windows),
+    G = matrix(NA, nrow = length(window_list), ncol = max_windows),
+    U = matrix(NA, nrow = length(window_list), ncol = max_windows)
+  )
+  
+  # Name the rows by the sequence names and the columns by window numbers.
+  rownames(nuc_list$A) <- rownames(nuc_list$C) <- 
+    rownames(nuc_list$G) <- rownames(nuc_list$U) <- seq_names
+  colnames(nuc_list$A) <- colnames(nuc_list$C) <- 
+    colnames(nuc_list$G) <- colnames(nuc_list$U) <- paste0("Window_", 1:max_windows)
+  
+  # Fill in the matrices: for each sequence, fill the first n windows.
+  for (i in seq_along(window_list)) {
+    m <- window_list[[i]]
+    num_windows <- nrow(m)
+    nuc_list$A[i, 1:num_windows] <- m[, "A"]
+    nuc_list$C[i, 1:num_windows] <- m[, "C"]
+    nuc_list$G[i, 1:num_windows] <- m[, "G"]
+    nuc_list$U[i, 1:num_windows] <- m[, "U"]
+  }
+  
+  return(nuc_list)
+}
+
+# Example usage:
+# Suppose seq_spliced_exons is your DNAStringSet of length 217:
+nuc_matrices <- calc_bp_percentages_matrix(seq_spliced_exons, window_size = 20)
+
+# nuc_matrices is a list with 4 matrices (one for each nucleotide).
+# For example, to look at the matrix for nucleotide A:
+A_matrix <- nuc_matrices$A
+dim(A_matrix)    # rows: number of sequences, columns: maximum window number
+head(A_matrix) 
+```
+
+```{r}
+flatten_nuc_matrices <- function(nuc_matrices) {
+  # Assume nuc_matrices is a list with elements named "A", "C", "G", and "T"
+  # Each matrix has rows = sequence names and columns = windows (e.g. "Window_1", "Window_2", ...)
+  nuc_order <- c("A", "C", "G", "U")
+  
+  # Rename columns for each nucleotide matrix to include the nucleotide letter.
+  renamed_list <- lapply(nuc_order, function(nuc) {
+    mat <- nuc_matrices[[nuc]]
+    new_colnames <- paste0(colnames(mat), "_", nuc)
+    colnames(mat) <- new_colnames
+    return(mat)
+  })
+  names(renamed_list) <- nuc_order
+  
+  combined <- do.call(cbind, renamed_list)
+  
+  # Reorder columns so that columns are arranged by window number first.
+  # We assume column names follow the pattern "Window_<number>_<nuc>"
+  col_info <- utils::strcapture(
+    "Window_([0-9]+)_([A-Z])", 
+    colnames(combined), 
+    proto = data.frame(window = integer(), nuc = character())
+  )
+  # Order by window number, then by nucleotide according to nuc_order.
+  col_order <- order(col_info$window, match(col_info$nuc, nuc_order))
+  
+  final_mat <- combined[, col_order, drop = FALSE]
+  return(final_mat)
+}
+
+# Example usage:
+# Suppose 'nuc_matrices' is the list returned by calc_bp_percentages_matrix().
+final_feature_matrix <- flatten_nuc_matrices(nuc_matrices)
+dim(final_feature_matrix)      # Rows: sequences, Columns: (# windows * 4)
+colnames(final_feature_matrix) # Example column names: "Window_1_A", "Window_1_C", ...
+
+```
+
+```{r}
+
+library(Biostrings)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+
+get_bp_percent <- function(dna_set){
+  bp_counts <- oligonucleotideFrequency(dna_set, width = 1)
+  bp_percent <- 100 * bp_counts / rowSums(bp_counts)
+
+}
+get_dibp_features <- function(dna_set){
+  di_freq <- oligonucleotideFrequency(dna_set, width = 2)
+  # For each sequence, there are (length - 1) overlapping dinucleotides.
+  di_perc <- 100 * di_freq / (width(dna_set) - 1)
+ 
+  }
+
+get_tribp_features <- function(dna_set){
+    # For tri-nucleotides (e.g. "AAA", etc.)
+  tri_freq <- oligonucleotideFrequency(dna_set, width = 3)
+  # For each sequence, there are (length - 2) overlapping trinucleotides.
+  tri_perc <- 100 * tri_freq / (width(dna_set) - 2)
+  # print(tri_perc)
+}
+
+barplot_bppercent <- function(matrix) {
+    
+   
+  # Convert the matrix to a data frame and pivot it to long format
+  df <- as.data.frame(matrix)
+  df$Sample <- rownames(df)
+  
+  df_long <- pivot_longer(df, cols = -Sample, names_to = "Dinucleotide", values_to = "Value")
+  
+  # Calculate the mean value for each dinucleotide
+  mean_df <- df_long %>% 
+    group_by(Dinucleotide) %>% 
+    summarize(Mean = mean(Value)) %>%
+    arrange(desc(Mean))
+df_long$Dinucleotide <- factor(df_long$Dinucleotide, levels = mean_df$Dinucleotide)
+
+  # Create the ggplot2 plot
+  p <- ggplot() +
+    # Bar layer for the mean of each dinucleotide
+    geom_bar(data = mean_df, aes(x = Dinucleotide, y = Mean), 
+             stat = "identity", fill = "darkgray", width = 0.7) +
+    # Jitter layer for the individual data points
+    geom_jitter(data = df_long, aes(x = Dinucleotide, y = Value), 
+                width = 0.15, size = 2, color = "#2972b6") +
+    # Minimal theme and rotate x-axis labels 45 degrees
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+          plot.title = element_text(hjust = 0.5)) +
+    labs(x = "bp combination", 
+         y = "%", 
+         title = "Pertentage of bp in exon's upstream region (150bp)")
+  
+  # Print the plot
+  print(p)
+}
+
+
+bp_percent <-  get_bp_percent(seq_spliced_exons)
+barplot_bppercent(bp_percent)
+
+dibp_percent <-  get_dibp_features(seq_spliced_exons)
+barplot_bppercent(dibp_percent)
+
+
+tribp_percent <-  get_tribp_features(seq_spliced_exons)
+barplot_bppercent(tribp_percent)
+
+
+bp_percent <-  get_bp_percent(seq_non_spliced_exons)
+barplot_bppercent(bp_percent)
+
+dibp_percent <-  get_dibp_features(seq_non_spliced_exons)
+barplot_bppercent(dibp_percent)
+
+
+tribp_percent <-  get_tribp_features(seq_non_spliced_exons)
+barplot_bppercent(tribp_percent)
+
+
+```
+
+```{r}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(plotly)
+
+barplot_bppercent2 <- function(mat1, mat2, 
+                               group1_label = "spliced", 
+                               group2_label = "non-spliced",
+                               group1_color = "#F84040",  # default blue
+                               group2_color = "skyblue") {
+  
+  # Convert each matrix to a data frame, add sample names and a group identifier
+  df1 <- as.data.frame(mat1)
+  df1$Sample <- rownames(df1)
+  df1$Group <- group1_label
+  
+  df2 <- as.data.frame(mat2)
+  df2$Sample <- rownames(df2)
+  df2$Group <- group2_label
+  
+  # Combine the two data frames
+  df_all <- bind_rows(df1, df2)
+  
+  # Pivot the combined data frame to long format
+  df_long <- pivot_longer(df_all, 
+                          cols = -c(Sample, Group), 
+                          names_to = "Dinucleotide", 
+                          values_to = "Value")
+  
+  # Calculate the mean for each dinucleotide within each group
+  mean_df <- df_long %>% 
+    group_by(Dinucleotide, Group) %>% 
+    summarize(Mean = mean(Value), .groups = "drop")
+    
+  # Calculate group1 means and sort dinucleotides by them (largest to smallest)
+  group1_means <- mean_df %>% 
+    filter(Group == group1_label) %>% 
+    arrange(desc(Mean))
+  
+  # Update factor levels based on group1 ordering
+  df_long$Dinucleotide <- factor(df_long$Dinucleotide, levels = group1_means$Dinucleotide)
+  mean_df$Dinucleotide <- factor(mean_df$Dinucleotide, levels = group1_means$Dinucleotide)
+  
+  
+  # Create the ggplot: grouped bars with jittered data points
+  p <- ggplot() +
+    # Bar layer: use position_dodge to separate groups
+    geom_bar(data = mean_df, 
+             aes(x = Dinucleotide, y = Mean, fill = Group), 
+             stat = "identity", 
+             position = position_dodge(width = 0.8), 
+             width = 0.7) +
+    # Jitter layer: position_jitterdodge to add jitter while respecting dodge groups
+    geom_jitter(data = df_long, 
+                aes(x = Dinucleotide, y = Value, color = Group), 
+                position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8), 
+                size = 1) +
+    scale_fill_manual(values = setNames(c(group1_color, group2_color), c(group1_label, group2_label)))+
+    scale_color_manual(values = setNames(c(group1_color, group2_color), c('gray', 'gray')))+
+ 
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+          plot.title = element_text(hjust = 0.5)) +
+    labs(x = "bp combination", 
+         y = "%", 
+         title = "Percentage of bp in exon's upstream region (150bp)",
+         fill = "Group",
+         color = "Group")
+  
+  ggplotly(p)
+}
+
+se_percent <-  get_bp_percent(seq_spliced_exons)
+non_se_percent <-  get_bp_percent(seq_non_spliced_exons)
+barplot_bppercent2(se_percent, non_se_percent)
+
+
+
+se_percent <-  get_dibp_features(seq_spliced_exons)
+non_se_percent <-  get_dibp_features(seq_non_spliced_exons)
+barplot_bppercent2(se_percent, non_se_percent)
+
+se_percent <-  get_tribp_features(seq_spliced_exons)
+non_se_percent <-  get_tribp_features(seq_non_spliced_exons)
+barplot_bppercent2(se_percent, non_se_percent)
+```
