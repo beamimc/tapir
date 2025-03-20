@@ -494,6 +494,19 @@ toy_flat |>
   )
 ```
 
+```{r}
+library(Biostrings)
+toy_seq <- RNAStringSet(c(
+  "AUGCA",    # width 5
+  "AUGCA",    # width 5
+  "GG"       # width 2
+))
+
+# toy seq to check windows with different len
+toy_seq
+
+```
+
 ## Create features for ML from the exons upstream sequences
 
 \% of bp per sequence
@@ -532,13 +545,13 @@ get_tribp_features <- function(stringSet){
 
 ```
 
-Fucntion to create windows and calculate % bp per window
+Function to create windows and calculate % bp per window
 
 -   10 width non-overlapping windows - it creates 40 features (10 windows x 4 bp) per exon (row)
 
 ```{r}
 
-get_windows_features <- function(upstr_ranges, #input is GRanges object 
+get_windows<- function(upstr_ranges, #input is GRanges object 
                                  window_width = 10,
                                  width_upstream = 100 ## make sure it maches flankupsteam
                                  ){
@@ -569,11 +582,55 @@ get_windows_features <- function(upstr_ranges, #input is GRanges object
     # head(final_matrix)
   return(final_matrix)
 }
-dim(get_windows_features(upstr_spliced_exons))
-dim(get_windows_features(upstr_non_spliced_exons))
+dim(get_windows(upstr_spliced_exons))
+dim(get_windows(upstr_non_spliced_exons))
 ```
 
-Create df with all the features (% of bp, di, tri, and windows)
+Function to create overlapping windows and calculate % bp per window
+
+```{r}
+get_sliding_windows <- function(upstr_ranges, #input is GRanges object 
+                                window_width = 10,
+                                width_upstream = 100, ## maches flankupsteam - i should fix to not have to hardcode 
+                                overlap = 5 # you can do overlap = 0 for non-ovelp win
+                                ){
+    #number of windows generated given the width and the length of the total range region 
+    n_windows <- width_upstream / window_width 
+    # calc step  # if step == window_width slide_ranges is equiv to tile_ranges 
+    step <-  window_width - overlap 
+    n_windows <- ceiling((width_upstream - window_width) / step) + 1
+    
+    windows <- upstr_ranges |> slide_ranges( width = window_width, 
+                                             step = step)#divive in windows
+    seq_windows <-  Hsapiens |>  
+                     getSeq(windows) |> 
+                     RNAStringSet() 
+    # RNAStringSet result has n_windows x #exons rows eg if 158 exons, and 10 windows , we will get 1580 rows, 10 fisrt are the windows of the first exon, 11-20 rows are the windows for the next exon etc
+    windows_bp <- get_bp_percent(seq_windows) #calculate %bp of all the windows
+    # dim(windows_bp)
+    
+    result_list <- vector("list", n_windows)
+    for (window_index in 1:n_windows){ 
+      indices <- seq(from = window_index, 
+                     by = n_windows, 
+                     length.out = length(upstr_ranges))
+      
+      sub_matrix <- windows_bp[indices, ]
+      colnames(sub_matrix) <- paste0("w", window_index, "_", colnames(sub_matrix))
+      
+      result_list[[window_index]] <- sub_matrix
+    }
+    final_matrix <- do.call(cbind, result_list)
+    # dim(final_matrix) 
+    # head(final_matrix)
+  return(final_matrix)
+}
+dim(get_sliding_windows(upstr_spliced_exons))
+dim(get_sliding_windows(upstr_non_spliced_exons))
+
+```
+
+Create df with all the features (% of bp, di, tri, and sliding windows)
 
 ```{r}
 create_exon_df <- function(seq_exons, 
@@ -590,7 +647,11 @@ create_exon_df <- function(seq_exons,
   df <- cbind(df, get_bp_percent(seq_exons))
   df <- cbind(df, get_dibp_features(seq_exons))
   df <- cbind(df, get_tribp_features(seq_exons))
-  df <- cbind(df, get_windows_features(upstr_exons))
+  df <- cbind(df, get_sliding_windows(upstr_exons,#slid windows
+                                      window_width = 10,
+                                      width_upstream = width_upstream, ## maches flankupsteam 
+                                      overlap = 5
+                                      )) 
   
   return(df)
 }
