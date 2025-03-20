@@ -249,7 +249,6 @@ length(exons)
 all.equal(names(exons), txps$TXID)
 names(exons) <- txps$TXNAME
 
-
 ```
 
 Plot gardener example
@@ -343,21 +342,27 @@ setdiff(sig_res$isoform_id, names(sig_exons))
 
 flat_sig_exons <- unlist(sig_exons)
   
-tx_coefs <-  sig_res %>%
-  mutate(coef = ifelse(estimates > 0, "+", "-")) %>%
-  select(isoform_id, coef)
+sig_res <-  sig_res %>%
+  mutate(sign = sign(estimates))
 
 
 #include coef +/- column from the DTU analysis saturn 
-flat_sig_exons$coef <- tx_coefs$coef[match(names(flat_sig_exons), tx_coefs$isoform_id)]
+flat_sig_exons$coef <- sig_res$estimates[match(names(flat_sig_exons), sig_res$isoform_id)]
+flat_sig_exons$sign <- sig_res$sign[match(names(flat_sig_exons), sig_res$isoform_id)]
+
 #include gene name for each transcript name 
-flat_sig_exons$gene <- txps$GENEID[match(names(flat_sig_exons), txps$TXNAME)]            
-flat_sig_exons$TXID <- names(flat_sig_exons)
+flat_sig_exons$gene <- sig_res$gene_id[match(names(flat_sig_exons), sig_res$isoform_id)]
+flat_sig_exons$isoform <- names(flat_sig_exons)
 
 # group by gene and coefficient, then project down to flatten version
 x_flat <-flat_sig_exons |>
-        group_by(gene, coef) |>
-        reduce_ranges_directed() 
+        group_by(gene, sign) |>
+        reduce_ranges_directed(
+          min.gapwidth = 0L,
+          avg_coef = mean(coef),
+          ids = paste(isoform, collapse=","),
+          mixed = TRUE
+        ) 
 #exons overlap but are not exactly the same,  reduce_ranges()  will merge them into a single contiguous range that spans the union of all overlapping regions 
 # Overlapping exons → merged into a single continuous exon.
 # Non-overlapping exons → remain separate.
@@ -365,13 +370,14 @@ x_flat <-flat_sig_exons |>
 x_flat$aux_id <- seq(length(x_flat))
 # take the flattened `+` exons and remove the flatted `-` exons --> result is exons spliced by PTBP1
 spliced_exons <-  x_flat |>
-                filter(coef == "+") |> # Selects only the flattened + strand exons
-                filter_by_non_overlaps( # Removes the parts that overlap with the - strand exons
-                  x_flat |> filter(coef == "-")
-                )
+                  filter(sign == 1) |> # Selects only the flattened + strand exons
+                  filter_by_non_overlaps_directed( # Removes the parts that overlap with the - strand exons
+                      x_flat |> filter(sign == -1)
+                      )
+
 length(spliced_exons) # n of spliced exons 
 length(unique(spliced_exons$gene)) # n of dif genes
-unique(spliced_exons$coef) # all should be + 
+unique(spliced_exons$sign) # all should be + 
 
 
 non_spliced_exons <- x_flat |>
@@ -380,154 +386,117 @@ non_spliced_exons <- x_flat |>
 
 length(non_spliced_exons) # n of  exons 
 length(unique(non_spliced_exons$gene)) # n of dif genes
-unique(non_spliced_exons$coef) 
+unique(non_spliced_exons$sign) 
 
 
-table(x_flat$coef, useNA = "ifany")
+table(x_flat$sign, useNA = "ifany")
 
 
 ```
 
-\
-\
+Visualize example of Skiped exon event (this will look better with plotgardener when i can filter the transcripts / edit the exons to show)
+
+```{r}
+gene_names <-  unique(spliced_exons$gene)
+
+# create list of GRangesList (a GRangesList object per gene)
+by_gene <- split(x_flat, x_flat$gene)
+# for each gene, split the GRanges by isoform id and convert the result to a GRangesList
+x_flat_GRlist <- lapply(by_gene, function(g) GRangesList(split(g, g$ids))) #all exons
+
+
+# get for only spliced exons
+by_gene <- split(spliced_exons, spliced_exons$gene)
+spliced_exons_GRlist <- lapply(by_gene, function(g) GRangesList(split(g, g$ids)))
+for (name in names(spliced_exons_GRlist)){
+  names(spliced_exons_GRlist[[name]]) <- paste0("spliced_", names(spliced_exons_GRlist[[name]])) #add spliced to differentiate bc i cant color with wiggleplot
+}
+
+#plot each gene 
+for (name in gene_names){
+  combined_grl <- c(x_flat_GRlist[[name]], spliced_exons_GRlist[[name]])
+  wiggleplotr::plotTranscripts(combined_grl,rescale_introns = TRUE)
+  
+}
+
+```
 
 Get upstream seq from all exons
 
 ```{r}
 
 library(plyranges)
+width_upstream <- 100
 
 upstr_spliced_exons <- spliced_exons %>%
-        flank_upstream(width =100) 
+        flank_upstream(width = width_upstream) 
 # The result will be another GRanges object that still contains 158 ranges,
 # but each range now represents the upstream flanking region of the corresponding exon. 
 
 upstr_non_spliced_exons <- non_spliced_exons %>%
-        flank_upstream(width =100) 
+        flank_upstream(width = width_upstream) 
 # The result will be another GRanges object that still contains 158 ranges,
 # but each range now represents the upstream flanking region of the corresponding exon. 
 ```
 
 ```{r}
-#| eval: false
 library(Biostrings)
 library(BSgenome)
 library(BSgenome.Hsapiens.UCSC.hg38)
 
 seq_spliced_exons <-  Hsapiens |>  ## RNAStringSet object of length 150:
                        getSeq(upstr_spliced_exons) |>
-                       RNAStringSet()
+                       RNAStringSet() 
+metadata(seq_spliced_exons)$aux_id <- upstr_spliced_exons$aux_id
+
 
 seq_non_spliced_exons <-  Hsapiens |>  ## RNAStringSet object of length 150:
                        getSeq(upstr_non_spliced_exons) |>
                        RNAStringSet()
+
+metadata(seq_non_spliced_exons)$aux_id <- upstr_non_spliced_exons$aux_id
 ```
 
-Create features for ML from the exons upstream sequences
+## Create toy example for troubleshooting/testing
 
 ```{r}
-library(IRanges)
-library(Biostrings)
-calc_bp_percentages_matrix <- function(dnaSet, window_size = 15) {
-  # Calculate percentages for each sequence in the DNAStringSet.
-  # Each element of window_list will be a matrix with rows = windows,
-  # and columns = "A", "C", "G", "T".
-  window_list <- lapply(dnaSet, function(seq) {
-    n <- nchar(seq)
-    if (n < window_size) return(NULL)  # return NULL if sequence is too short
-    starts <- 1:(n - window_size + 1)
-    windows <- IRanges(start = starts, width = window_size)
-    seq_views <- Views(seq, windows)
-    counts <- letterFrequency(seq_views, letters = c("A", "C", "G", "U"))
-    percentages <- 100 * counts / window_size
-    rownames(percentages) <- paste0("Window_", starts)
-    return(percentages)
-  })
-  
-  # Remove any NULLs (if some sequences were too short)
-  valid_idx <- sapply(window_list, function(x) !is.null(x))
-  window_list <- window_list[valid_idx]
-  seq_names <- names(dnaSet)[valid_idx]
-  
-  # Find the maximum number of windows across all sequences
-  max_windows <- max(sapply(window_list, nrow))
-  
-  # Create empty matrices (one per nucleotide) with rows = sequences and columns = windows.
-  nuc_list <- list(
-    A = matrix(NA, nrow = length(window_list), ncol = max_windows),
-    C = matrix(NA, nrow = length(window_list), ncol = max_windows),
-    G = matrix(NA, nrow = length(window_list), ncol = max_windows),
-    U = matrix(NA, nrow = length(window_list), ncol = max_windows)
+library(plyranges)
+set.seed(1)
+toy_df <- data.frame(
+  seqnames=rep(c("chr1","chr2"),each=8),
+  start=c(11,31,11,41,11,61,61,81),
+  width=c(10),
+  strand=rep(c("-","+"),each=2),
+  gene=rep(c("A","B"),each=8),
+  isoform=letters[rep(1:8,each=2)],
+  coef=abs(rnorm(16)) * rep(c(1,-1),each=4)
+)
+
+toy_x <- toy_df |>
+  as_granges()
+
+toy_x <- toy_x |>
+  mutate(sign = sign(coef))
+
+toy_flat <- toy_x |>
+  group_by(gene, sign) |>
+  reduce_ranges_directed(
+    min.gapwidth = 0L,
+    avg_coef = mean(coef),
+    ids = paste(isoform, collapse=",")
   )
-  
-  # Name the rows by the sequence names and the columns by window numbers.
-  rownames(nuc_list$A) <- rownames(nuc_list$C) <- 
-    rownames(nuc_list$G) <- rownames(nuc_list$U) <- seq_names
-  colnames(nuc_list$A) <- colnames(nuc_list$C) <- 
-    colnames(nuc_list$G) <- colnames(nuc_list$U) <- paste0("Window_", 1:max_windows)
-  
-  # Fill in the matrices: for each sequence, fill the first n windows.
-  for (i in seq_along(window_list)) {
-    m <- window_list[[i]]
-    num_windows <- nrow(m)
-    nuc_list$A[i, 1:num_windows] <- m[, "A"]
-    nuc_list$C[i, 1:num_windows] <- m[, "C"]
-    nuc_list$G[i, 1:num_windows] <- m[, "G"]
-    nuc_list$U[i, 1:num_windows] <- m[, "U"]
-  }
-  
-  return(nuc_list)
-}
+toy_flat
 
-# Example usage:
-# Suppose seq_spliced_exons is your DNAStringSet of length 217:
-nuc_matrices <- calc_bp_percentages_matrix(seq_spliced_exons, window_size = 20)
-
-# nuc_matrices is a list with 4 matrices (one for each nucleotide).
-# For example, to look at the matrix for nucleotide A:
-A_matrix <- nuc_matrices$A
-dim(A_matrix)    # rows: number of sequences, columns: maximum window number
-head(A_matrix) 
+toy_flat |>
+  filter(sign == 1) |>
+  filter_by_non_overlaps_directed(
+    toy_flat |> filter(sign == -1)
+  )
 ```
 
-```{r}
-flatten_nuc_matrices <- function(nuc_matrices) {
-  # Assume nuc_matrices is a list with elements named "A", "C", "G", and "T"
-  # Each matrix has rows = sequence names and columns = windows (e.g. "Window_1", "Window_2", ...)
-  nuc_order <- c("A", "C", "G", "U")
-  
-  # Rename columns for each nucleotide matrix to include the nucleotide letter.
-  renamed_list <- lapply(nuc_order, function(nuc) {
-    mat <- nuc_matrices[[nuc]]
-    new_colnames <- paste0(colnames(mat), "_", nuc)
-    colnames(mat) <- new_colnames
-    return(mat)
-  })
-  names(renamed_list) <- nuc_order
-  
-  combined <- do.call(cbind, renamed_list)
-  
-  # Reorder columns so that columns are arranged by window number first.
-  # We assume column names follow the pattern "Window_<number>_<nuc>"
-  col_info <- utils::strcapture(
-    "Window_([0-9]+)_([A-Z])", 
-    colnames(combined), 
-    proto = data.frame(window = integer(), nuc = character())
-  )
-  # Order by window number, then by nucleotide according to nuc_order.
-  col_order <- order(col_info$window, match(col_info$nuc, nuc_order))
-  
-  final_mat <- combined[, col_order, drop = FALSE]
-  return(final_mat)
-}
+## Create features for ML from the exons upstream sequences
 
-# Example usage:
-# Suppose 'nuc_matrices' is the list returned by calc_bp_percentages_matrix().
-final_feature_matrix <- flatten_nuc_matrices(nuc_matrices)
-dim(final_feature_matrix)      # Rows: sequences, Columns: (# windows * 4)
-colnames(final_feature_matrix) # Example column names: "Window_1_A", "Window_1_C", ...
-
-```
+\% of bp per sequence
 
 ```{r}
 
@@ -536,49 +505,134 @@ library(ggplot2)
 library(tidyr)
 library(dplyr)
 
-get_bp_percent <- function(dna_set){
-  bp_counts <- oligonucleotideFrequency(dna_set, width = 1)
-  bp_percent <- 100 * bp_counts / rowSums(bp_counts)
+
+# % of A/U/C/G
+get_bp_count <- function(stringSet){ #input is RNAStringSet object
+  bp_counts <- oligonucleotideFrequency(stringSet, width = 1)
+}
+
+# % of A/U/C/G
+get_bp_percent <- function(stringSet){
+  bp_counts <- oligonucleotideFrequency(stringSet, width = 1)
+  bp_percent <-  bp_counts / rowSums(bp_counts)
 
 }
-get_dibp_features <- function(dna_set){
-  di_freq <- oligonucleotideFrequency(dna_set, width = 2)
-  # For each sequence, there are (length - 1) overlapping dinucleotides.
-  di_perc <- 100 * di_freq / (width(dna_set) - 1)
+# % of pairs (eg AA, AU, AC, etc)
+get_dibp_features <- function(stringSet){
+  di_freq <- oligonucleotideFrequency(stringSet, width = 2)
+  di_perc <- di_freq / (width(stringSet) - 1) #equiv to rowSums
  
   }
 
-get_tribp_features <- function(dna_set){
-    # For tri-nucleotides (e.g. "AAA", etc.)
-  tri_freq <- oligonucleotideFrequency(dna_set, width = 3)
-  # For each sequence, there are (length - 2) overlapping trinucleotides.
-  tri_perc <- 100 * tri_freq / (width(dna_set) - 2)
-  # print(tri_perc)
+# % of triplets (eg AAA, AAU, AAC, etc)
+get_tribp_features <- function(stringSet){
+  tri_freq <- oligonucleotideFrequency(stringSet, width = 3)
+  tri_perc <- tri_freq / (width(stringSet) - 2)
 }
 
-barplot_bppercent <- function(matrix) {
+```
+
+Fucntion to create windows and calculate % bp per window
+
+-   10 width non-overlapping windows - it creates 40 features (10 windows x 4 bp) per exon (row)
+
+```{r}
+
+get_windows_features <- function(upstr_ranges, #input is GRanges object 
+                                 window_width = 10,
+                                 width_upstream = 100 ## make sure it maches flankupsteam
+                                 ){
+
+    n_windows <- width_upstream / window_width #number of windows generated given the width and the length of the total range region 
     
-   
+    windows <- upstr_ranges |> tile_ranges(window_width) #divive in windows
+    seq_windows <-  Hsapiens |>  
+                     getSeq(windows) |> 
+                     RNAStringSet() 
+    # RNAStringSet result has n_windows x #exons rows eg if 158 exons, and 10 windows , we will get 1580 rows, 10 fisrt are the windows of the first exon, 11-20 rows are the windows for the next exon etc
+    windows_bp <- get_bp_percent(seq_windows) #calculate %bp of all the windows
+    # dim(windows_bp)
+    
+    result_list <- vector("list", n_windows)
+    for (window_index in 1:n_windows){ 
+      indices <- seq(from = window_index, 
+                     by = n_windows, 
+                     length.out = length(upstr_ranges))
+      
+      sub_matrix <- windows_bp[indices, ]
+      colnames(sub_matrix) <- paste0("w", window_index, "_", colnames(sub_matrix))
+      
+      result_list[[window_index]] <- sub_matrix
+    }
+    final_matrix <- do.call(cbind, result_list)
+    # dim(final_matrix) 
+    # head(final_matrix)
+  return(final_matrix)
+}
+dim(get_windows_features(upstr_spliced_exons))
+dim(get_windows_features(upstr_non_spliced_exons))
+```
+
+Create df with all the features (% of bp, di, tri, and windows)
+
+```{r}
+create_exon_df <- function(seq_exons, 
+                           upstr_exons,
+                           label=NA #binary label for ML
+                           ) {
+  # Convert the RNAStringSet to a data frame and add the auxiliary ID
+  df <- as.data.frame(seq_exons) |>
+    dplyr::mutate(aux_id = metadata(seq_exons)$aux_id) |>
+    dplyr::mutate(label = label)|>
+    dplyr::rename(seq = x)
+  
+  # Add % base pair features, dibp, tribp, and window features
+  df <- cbind(df, get_bp_percent(seq_exons))
+  df <- cbind(df, get_dibp_features(seq_exons))
+  df <- cbind(df, get_tribp_features(seq_exons))
+  df <- cbind(df, get_windows_features(upstr_exons))
+  
+  return(df)
+}
+spliced_exons_df <- create_exon_df(seq_spliced_exons, 
+                                   upstr_spliced_exons,
+                                   1)
+dim(spliced_exons_df)
+
+non_spliced_exons_df <- create_exon_df(seq_non_spliced_exons, 
+                                       upstr_non_spliced_exons,
+                                       0)
+dim(non_spliced_exons_df)
+
+total_df <- dplyr::bind_rows(spliced_exons_df, non_spliced_exons_df) #features df for ML with both SE and non SE exons label 1/0
+dim(total_df)
+```
+
+Make % plots
+
+```{r}
+
+barplot_bppercent <- function(matrix) {
   # Convert the matrix to a data frame and pivot it to long format
   df <- as.data.frame(matrix)
   df$Sample <- rownames(df)
   
-  df_long <- pivot_longer(df, cols = -Sample, names_to = "Dinucleotide", values_to = "Value")
+  df_long <- pivot_longer(df, cols = -Sample, names_to = "bp", values_to = "Value")
   
-  # Calculate the mean value for each dinucleotide
+  # Calculate the mean value for each bp
   mean_df <- df_long %>% 
-    group_by(Dinucleotide) %>% 
+    group_by(bp) %>% 
     summarize(Mean = mean(Value)) %>%
     arrange(desc(Mean))
-df_long$Dinucleotide <- factor(df_long$Dinucleotide, levels = mean_df$Dinucleotide)
+df_long$bp <- factor(df_long$bp, levels = mean_df$bp)
 
   # Create the ggplot2 plot
   p <- ggplot() +
-    # Bar layer for the mean of each dinucleotide
-    geom_bar(data = mean_df, aes(x = Dinucleotide, y = Mean), 
+    # Bar layer for the mean of each bp
+    geom_bar(data = mean_df, aes(x = bp, y = Mean), 
              stat = "identity", fill = "darkgray", width = 0.7) +
     # Jitter layer for the individual data points
-    geom_jitter(data = df_long, aes(x = Dinucleotide, y = Value), 
+    geom_jitter(data = df_long, aes(x = bp, y = Value), 
                 width = 0.15, size = 2, color = "#2972b6") +
     # Minimal theme and rotate x-axis labels 45 degrees
     theme_classic() +
@@ -614,7 +668,6 @@ barplot_bppercent(dibp_percent)
 tribp_percent <-  get_tribp_features(seq_non_spliced_exons)
 barplot_bppercent(tribp_percent)
 
-
 ```
 
 ```{r}
@@ -644,62 +697,62 @@ barplot_bppercent2 <- function(mat1, mat2,
   # Pivot the combined data frame to long format
   df_long <- pivot_longer(df_all, 
                           cols = -c(Sample, Group), 
-                          names_to = "Dinucleotide", 
+                          names_to = "bp", 
                           values_to = "Value")
   
-  # Calculate the mean for each dinucleotide within each group
+  # Calculate the mean for each bp within each group
   mean_df <- df_long %>% 
-    group_by(Dinucleotide, Group) %>% 
+    group_by(bp, Group) %>% 
     summarize(Mean = mean(Value), .groups = "drop")
     
-  # Calculate group1 means and sort dinucleotides by them (largest to smallest)
+  # Calculate group1 means and sort bps by them (largest to smallest)
   group1_means <- mean_df %>% 
     filter(Group == group1_label) %>% 
     arrange(desc(Mean))
   
   # Update factor levels based on group1 ordering
-  df_long$Dinucleotide <- factor(df_long$Dinucleotide, levels = group1_means$Dinucleotide)
-  mean_df$Dinucleotide <- factor(mean_df$Dinucleotide, levels = group1_means$Dinucleotide)
+  df_long$bp <- factor(df_long$bp, levels = group1_means$bp)
+  mean_df$bp <- factor(mean_df$bp, levels = group1_means$bp)
   
   
   # Create the ggplot: grouped bars with jittered data points
   p <- ggplot() +
     # Bar layer: use position_dodge to separate groups
     geom_bar(data = mean_df, 
-             aes(x = Dinucleotide, y = Mean, fill = Group), 
-             stat = "identity", 
+             aes(x = bp, y = Mean, fill = Group), 
+             stat = "identity",
              position = position_dodge(width = 0.8), 
              width = 0.7) +
     # Jitter layer: position_jitterdodge to add jitter while respecting dodge groups
     geom_jitter(data = df_long, 
-                aes(x = Dinucleotide, y = Value, color = Group), 
+                aes(x = bp, y = Value, color = Group), 
                 position = position_jitterdodge(jitter.width = 0.15, dodge.width = 0.8), 
                 size = 1) +
-    scale_fill_manual(values = setNames(c(group1_color, group2_color), c(group1_label, group2_label)))+
-    scale_color_manual(values = setNames(c(group1_color, group2_color), c('gray', 'gray')))+
+    scale_fill_manual(values = setNames(c(group1_color, group2_color), 
+                                        c(group1_label, group2_label)))+
+    scale_color_manual(values = setNames(c(group1_color, group2_color), 
+                                         c('gray', 'gray')))+
  
     theme_classic() +
     theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
           plot.title = element_text(hjust = 0.5)) +
     labs(x = "bp combination", 
          y = "%", 
-         title = "Percentage of bp in exon's upstream region (150bp)",
-         fill = "Group",
-         color = "Group")
+         title = "Percentage of bp in exon's upstream region (150bp)")
   
   ggplotly(p)
 }
-
+# % of bp
 se_percent <-  get_bp_percent(seq_spliced_exons)
 non_se_percent <-  get_bp_percent(seq_non_spliced_exons)
 barplot_bppercent2(se_percent, non_se_percent)
 
-
-
+# % of pairs
 se_percent <-  get_dibp_features(seq_spliced_exons)
 non_se_percent <-  get_dibp_features(seq_non_spliced_exons)
 barplot_bppercent2(se_percent, non_se_percent)
 
+# % of triplets
 se_percent <-  get_tribp_features(seq_spliced_exons)
 non_se_percent <-  get_tribp_features(seq_non_spliced_exons)
 barplot_bppercent2(se_percent, non_se_percent)
