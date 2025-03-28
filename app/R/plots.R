@@ -20,14 +20,18 @@ plot_gene_txs_wiggleplotr <- function(gene) {
 
 # Function: Plot isoforms per gene using plotgardener
 # ---------------------------------------------------------------
-plot_gene_txs <- function(gene, output_file, mean_diffs_DTU) {
+plot_gene_txs <- function(gene_symbol , output_file, mean_diffs_DTU, pvals) {
   
   # Identify the gene of interest by its geneid given its symbol (selectizeInput)
-  gene_of_interest <- unique(txp$geneid[txp$symbol == gene])
+  gene_of_interest <- unique(rowData(se)[rowData(se)$symbol == gene_symbol, "gene_id"])
+
   
   # Extract genomic coordinates for the gene
   gene_coords <- genes(txdb, filter = list(GENEID = gene_of_interest))
   transcripts <- transcripts(txdb, filter = list(GENEID = gene_of_interest))
+  
+  # filter to keep only the transcripts in the experiment
+  assay_transcripts <-  transcripts |> subset(tx_name %in% names(mean_diffs_DTU)) 
   
   # Extract chromosome, start, and end positions of the gene
   gene_chrom <- as.character(seqnames(gene_coords))
@@ -38,31 +42,28 @@ plot_gene_txs <- function(gene, output_file, mean_diffs_DTU) {
   par <- pgParams(
     chrom = gene_chrom, 
     chromstart = gene_start, chromend = gene_end,
-    assembly = gencode_assembly, just = c("left", "bottom")
+    assembly = db_assembly, just = c("left", "bottom")
   )
   
-  # Identify transcripts of given gene
-  tx_to_show <- txp %>%
-    filter(symbol == gene) %>%
-    as_tibble() %>%
-    dplyr::pull(txid)
+
   
   #color all txp corresponding to the gene
-  hilite <- data.frame(transcript = tx_to_show, color = "#B1AFFF") 
-  hilite$color[hilite$transcript %in% names(mean_diffs_DTU)] <- "red"
-  # Assign red if the mean difference is < 0 and green if > 0
-  hilite <- hilite %>%
-    mutate(color = case_when(
-      transcript %in% names(mean_diffs_DTU) & mean_diffs_DTU[transcript] < 0 ~ "red",
-      transcript %in% names(mean_diffs_DTU) & mean_diffs_DTU[transcript] > 0 ~ "#5EBCFF",
-      TRUE ~ color
-    ))
+  df_values <- data.frame(
+    transcript = intersect(names(mean_diffs_DTU), names(pvals)),
+    mean_diff = mean_diffs_DTU[intersect(names(mean_diffs_DTU), names(pvals))],
+    pval = pvals[intersect(names(mean_diffs_DTU), names(pvals))],
+    stringsAsFactors = FALSE
+  ) %>%
+    mutate(score = (1 - pval) * sign(mean_diff),
+           color = custom_pal(score))
+  
+  hilite <- df_values %>% select(transcript, color)
   
   # Dynamically adjust plot dimensions based on transcript count
-  plotT_height <- round(length(tx_to_show) / 4, 3)  # Height scales with transcript count
+  plotT_height <- round(length(assay_transcripts) / 3, 3)  # Height scales with transcript count
   page_height <- plotT_height + 1  
   page_width <- 10 
-  
+  output_file <-file.path(wd, "app/www/temp.png")
   # Save the plot as a PNG file
   png(output_file, width = page_width * 200, height = page_height * 200, res = 170)
   
@@ -78,6 +79,7 @@ plot_gene_txs <- function(gene, output_file, mean_diffs_DTU) {
     x = 0.5, y = 0, width = page_width, height = plotT_height, 
     just = c("left", "top"), default.units = "inches",
     transcriptHighlights = hilite,
+    transcriptFilter = assay_transcripts$tx_name,
     limitLabel = FALSE,
     fontsize = 9,
     labels = "transcript"
@@ -94,30 +96,45 @@ plot_gene_txs <- function(gene, output_file, mean_diffs_DTU) {
   
   dev.off() 
 }
-# Function: Boxplots count comparion KD vs WT (change hardcode)
+
+
+# Function: create df_long for ggplot functions given 2 conditions 
 # ---------------------------------------------------------------
 
-boxplot_count_comparison <- function(prop, cd1 = "WT", cd2 = "KD") {
+get_plot_data <- function(prop,
+                           cd1 = "ctrl", 
+                           cd2 = "exp"
+                           ) {
   
   # Subset only samples from the two selected conditions
-  subset_indices <- se$condition %in% c(cd1, cd2)
+  subset_indices <- colData(se)$condition %in% c(cd1, cd2)
   prop_subset <- prop[subset_indices, ]
   condition_subset <- se$condition[subset_indices]
   
   # Convert to long format for ggplot
-  prop_long <- melt(prop_subset)
-  colnames(prop_long) <- c("Sample", "Transcript", "Proportion")
+  plot_data <- melt(prop_subset)
+  colnames(plot_data) <- c("Sample", "Transcript", "Proportion")
   # add conditions
-  sample_metadata <- as.data.frame(colData(se)[, c("names", "condition")])
-  prop_long <- merge(prop_long, sample_metadata, by.x = "Sample", by.y = "names") #inner joinis
+  sample_metadata <- as.data.frame(colData(se)[, c("sample_id", "condition")])
+  plot_data <- merge(plot_data, sample_metadata, by.x = "Sample", by.y = "sample_id") #inner joinis
+  plot_data |>
+    rename(Condition = condition)
+  return(plot_data)
   
-  plot_data <- prop_long
+}
+
+# Function: Boxplots count comparion KD vs WT (change hardcode)
+# ---------------------------------------------------------------
+
+boxplot_count_comparison <- function(prop, cd1 = "ctrl", cd2 = "exp") {
+  
+  plot_data <- get_plot_data(prop)
   
   # Filter the color palette to only include the selected conditions
   selected_colors <- condition_colors[c(cd1, cd2)]
   
   # Create the boxplot with dynamic color mapping
-  ggplot(plot_data, aes(x = Transcript, y = Proportion, fill = Condition)) +
+  ggplot(plot_data, aes(x = Transcript, y = Proportion, fill = condition)) +
     geom_boxplot(outlier.shape = NA, position = position_dodge(width = 0.75)) +
     theme_classic() +
     labs(x = "Transcript", y = "Proportion", title = "Proportion of Transcripts by Condition") +
@@ -128,38 +145,32 @@ boxplot_count_comparison <- function(prop, cd1 = "WT", cd2 = "KD") {
 # Function: spaguetti plot for transcript comparion KD vs WT (change hardcode)
 # ---------------------------------------------------------------
 
-line_plot_txp_comparison  <- function(prop, cd1 = "WT", cd2 = "KD"){
+line_plot_txp_comparison  <- function(prop, cd1 = "ctrl", cd2 = "exp"){
   
-  # Subset only samples from the two selected conditions
-  subset_indices <- se$condition %in% c(cd1, cd2)
-  prop_subset <- prop[subset_indices, ]
-  condition_subset <- se$condition[subset_indices]
+  plot_data <- get_plot_data(prop)
   
-  # Convert to long format for ggplot
-  prop_long <- melt(prop_subset)
-  colnames(prop_long) <- c("Sample", "Transcript", "Proportion")
-  # add conditions
-  sample_metadata <- as.data.frame(colData(se)[, c("names", "condition")])
-  prop_long <- merge(prop_long, sample_metadata, by.x = "Sample", by.y = "names") #inner joinis
-  
-  summary_data <- prop_long %>%
-    group_by(Transcript, condition) %>%
+  summary_data <- plot_data |>
+    group_by(Transcript, condition) |>
     summarise(
       mean_proportion = mean(Proportion),
       sd_proportion = sd(Proportion),
       n = dplyr::n(),
       se_proportion = sd_proportion / sqrt(n)  # Standard error
-    )
+    ) |>
+    # some names are too long - issues to fix
+    mutate(Transcript_short = substr(Transcript, 1, 10))
   
   # Filter the color palette to only include the selected conditions
   selected_colors <- condition_colors[c(cd1, cd2)]
   
-  p <- ggplot(summary_data, aes(x = condition, y = mean_proportion, , group = Transcript, color = Transcript)) +
+  p <- ggplot(summary_data, aes(x = condition, y = mean_proportion,
+                                group = Transcript, color = Transcript_short)) +
     geom_line() +
     geom_point() + 
     geom_errorbar(aes(ymin = mean_proportion - se_proportion, 
                       ymax = mean_proportion + se_proportion), 
                   width = 0.2) +           # Error bars for each point
+    
     theme_classic() +
     labs(x = "Condition", y = "Proportion", title = "Proportion of Transcripts by Condition") +
     theme(axis.text.x = element_text(angle = 0))
@@ -169,7 +180,7 @@ line_plot_txp_comparison  <- function(prop, cd1 = "WT", cd2 = "KD"){
 
 # Function: barplot of mean difs KD vs WT (change hardcode)
 # ---------------------------------------------------------------
-barplot_meandifs <- function(mean_diffs_DTU, pvals, cd1 = "WT", cd2 = "KD"){
+barplot_meandifs <- function(mean_diffs_DTU, pvals, cd1 = "ctrl", cd2 = "exp"){
   
   # Extract names
   names_mean_diffs <- names(mean_diffs_DTU)
@@ -177,7 +188,7 @@ barplot_meandifs <- function(mean_diffs_DTU, pvals, cd1 = "WT", cd2 = "KD"){
   
   # Ensure names are aligned properly
   common_transcripts <- intersect(names_mean_diffs, names_pvals)
-  
+   
   plot_df <- data.frame(
     Transcript = common_transcripts,
     MeanDiff = mean_diffs_DTU[common_transcripts],
@@ -201,6 +212,8 @@ barplot_meandifs <- function(mean_diffs_DTU, pvals, cd1 = "WT", cd2 = "KD"){
     geom_text(aes(y = y_position, label = sprintf("p=%.3f", pval)), size = 3, vjust = -0.5) + # Add p-values
     scale_fill_manual(values = c("Significant" = "red", "Not Significant" = "gray")) + # Color scheme
     labs(x = "Transcript", y = "Mean Difference", title = paste("Mean Differences", cd1,"vs", cd2)) +
+    # some names are too long - issues to fix
+    scale_x_discrete(labels = function(x) substr(x, 1, 10)) +
     theme_classic() +
     theme(axis.text.x = element_text(angle = 45))#, hjust = 1)) # Rotate x labels for readability
   ggplotly(p)

@@ -41,7 +41,7 @@ server <- function(input, output, session) {
   plot_path <- reactive({
     req(selected_gene())
     temp_file <- "www/temp.png"
-    plot_gene_txs(selected_gene(), temp_file, mean_diffs_DTU())  # Generate plot
+    plot_gene_txs(selected_gene(), temp_file, mean_diffs_DTU(), pvals())  # Generate plot
     return(temp_file)
   })
   

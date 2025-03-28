@@ -41,6 +41,7 @@ get_GO <- function(gene_symbol){
     SYMBOL = rep(names(go_terms), sapply(go_terms, length)),
     GO = unlist(go_terms)
   )
+  go_df$GO_name <- Term(go_df$GO)
   
   # Add ontology if desired
   go_df$ONTOLOGY <- mapIds(org.Hs.eg.db,
