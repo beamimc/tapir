@@ -1,0 +1,302 @@
+---
+title: "ML_PTBP1"
+---
+
+```{python}
+import pandas as pd
+import numpy as np 
+
+# Read the CSV file into a DataFrame
+df = pd.read_csv("exon_features.csv")
+print(df)
+df.columns
+
+
+```
+
+```{python}
+#get feature columns
+X = df.drop(columns=['seq', 'aux_id', 'label'])
+
+#get target col
+y = df['label']
+
+```
+
+## Feature Selection (pre ML)
+
+### **Filter**
+
+Remove features with very low variance
+
+```{python}
+from sklearn.feature_selection import VarianceThreshold
+
+#remove features with very low variance
+# Remove features with variance below a chosen threshold.
+# For example, threshold=0.01 means features with variance <= 0.01 will be removed.
+selector = VarianceThreshold(threshold=0.001)
+selector.fit(X)
+# Get the columns that pass the threshold
+kept_columns = X.columns[selector.get_support()].tolist()
+X_var = X[kept_columns]
+
+print("Columns after removing low variance features:")
+print(X_var.columns)
+X.shape
+X_var.shape
+
+```
+
+```{python}
+# import subprocess
+# subprocess.check_call(["pip3", "install", "seaborn"])
+
+```
+
+```{python}
+import seaborn as sns
+import matplotlib.pyplot as plt
+import numpy as np
+import matplotlib.pyplot as plt
+import numpy as np
+
+def plot_correlation_matrix(df):
+    # Compute the correlation matrix
+    corr = df.corr()
+    
+    # Create a figure and axis using matplotlib
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    # Plot the correlation matrix as a heatmap
+    cax = ax.imshow(corr, interpolation='nearest', cmap='viridis')
+    ax.set_title("Correlation Matrix")
+    
+    # Set x and y ticks to the column names
+    ax.set_xticks(np.arange(len(corr.columns)))
+    ax.set_xticklabels(corr.columns, rotation=90)
+    ax.set_yticks(np.arange(len(corr.index)))
+    ax.set_yticklabels(corr.index, fontsize=5)
+    
+    # Add a colorbar to show the scale of correlations
+    fig.colorbar(cax, ax=ax)
+    
+    plt.tight_layout()
+    plt.show()
+
+# Example usage: plot the correlation matrix of X_var
+plot_correlation_matrix(X_var)
+
+
+```
+
+```{python}
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+
+
+# Assuming X_vars contains your features and y is your binary target variable.
+X_train, X_test, y_train, y_test = train_test_split(
+    X_var, y, test_size=0.2, random_state=7, stratify=y
+)
+
+# Optionally, check the class distribution in the training and testing sets:
+print("Training set class distribution:")
+print(y_train.value_counts(normalize=True))
+print("\nTesting set class distribution:")
+print(y_test.value_counts(normalize=True))
+
+
+
+# Initialize the Random Forest classifier with a fixed random_state for reproducibility
+rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
+
+# Fit the model on the training data
+rf_model.fit(X_train, y_train)
+
+# Make predictions on the testing set
+y_pred = rf_model.predict(X_test)
+
+# Evaluate the model's performance
+print("Accuracy:", accuracy_score(y_test, y_pred))
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred))
+print("\nConfusion Matrix:")
+print(confusion_matrix(y_test, y_pred))
+```
+
+ 
+
+```{python}
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Assume rf_model is your fitted RandomForestClassifier and X_vars is your DataFrame of predictors.
+importances = rf_model.feature_importances_
+feature_names = X_var.columns
+
+# Create a pandas Series for a cleaner display and sort it in descending order.
+feat_importances = pd.Series(importances, index=feature_names).sort_values(ascending=True)
+feat_importances=feat_importances[-25:]
+print("Feature importances:")
+print(feat_importances)
+
+# Optional: Plot the feature importances as a bar chart.
+plt.figure(figsize=(10,10))
+feat_importances.plot(kind='barh')
+plt.title("Feature Importances")
+plt.ylabel("Importance Score")
+plt.xlabel("Features")
+plt.tight_layout()
+# creating a dictionary
+font = {'size': 8}
+ 
+# using rc function
+plt.rc('font', **font)
+plt.show()
+```
+
+grid search for dif models
+
+```{python}
+# undersample the 0 class
+# Check the original class distribution
+print("Original class distribution:")
+print(y.value_counts())
+
+# Get the indices for each class
+indices_class_0 = y[y == 0].index
+indices_class_1 = y[y == 1].index
+
+# Set a random seed for reproducibility
+np.random.seed(42)
+
+# Randomly sample indices from the majority class (0) to match the minority class count (1)
+undersampled_indices_class_0 = np.random.choice(indices_class_0, size=len(indices_class_1), replace=False)
+
+# Combine the undersampled indices with all indices from the minority class (1)
+undersampled_indices = np.concatenate([undersampled_indices_class_0, indices_class_1])
+
+# Shuffle the combined indices to mix the classes
+np.random.shuffle(undersampled_indices)
+
+# Create the new undersampled datasets
+X_under = X_var.loc[undersampled_indices]
+y_under = y.loc[undersampled_indices]
+print(y_under.value_counts())
+```
+
+```{python}
+from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from imblearn.over_sampling import SMOTE
+
+# Assuming X_var and y are already defined
+X_train, X_test, y_train, y_test = train_test_split(
+    X_under, y_under, test_size=0.3, random_state=42, stratify=y_under
+)
+
+
+print(y_train.value_counts())
+
+
+# Create a pipeline with a placeholder for the classifier.
+pipeline = Pipeline([
+    ('clf', RandomForestClassifier())  # initial estimator, will be replaced by grid search
+])
+
+# Define the parameter grid for different classifiers.
+param_grid = [
+    {
+        'clf': [RandomForestClassifier(random_state=42)],
+        'clf__n_estimators': [50, 100, 200],
+        'clf__max_depth': [None, 10, 20],
+    },
+    {
+        'clf': [LogisticRegression(solver='liblinear')],
+        'clf__C': [0.1, 1, 10]
+    },
+    {
+        'clf': [SVC()],
+        'clf__C': [0.1, 1, 10],
+        'clf__kernel': ['linear', 'rbf']
+    },
+    {
+        'clf': [KNeighborsClassifier()],
+        'clf__n_neighbors': [3, 5, 7]
+    }
+]
+
+# Setup GridSearchCV with 5-fold cross-validation
+grid_search = GridSearchCV(
+    estimator=pipeline,
+    param_grid=param_grid,
+    cv=5,
+    scoring='accuracy',
+    n_jobs=-1
+)
+
+# Fit grid search on the training data
+grid_search.fit(X_train, y_train)
+
+print("Best parameters found:", grid_search.best_params_)
+print("Best cross-validation accuracy: {:.4f}".format(grid_search.best_score_))
+
+# Use the best model to make predictions on the test set
+y_pred = grid_search.predict(X_test)
+
+# Evaluate the best model
+print("Test set accuracy: {:.4f}".format(accuracy_score(y_test, y_pred)))
+print("\nClassification Report:")
+print(classification_report(y_test, y_pred))
+print("\nConfusion Matrix:")
+print(confusion_matrix(y_test, y_pred))
+
+```
+
+```{python}
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# Retrieve the best estimator from GridSearchCV (which is a Pipeline)
+best_model = grid_search.best_estimator_
+
+# Extract the trained RandomForestClassifier from the pipeline's 'clf' step
+rf_classifier = best_model.named_steps['clf']
+
+# If X_var is a DataFrame, use its columns as feature names; otherwise, supply your feature names
+feature_names = X_var.columns
+
+# Get feature importances from the Random Forest model
+importances = rf_classifier.feature_importances_
+
+# Create a pandas Series for better plotting and sorting
+feat_importances = pd.Series(importances, index=feature_names)
+feat_importances = feat_importances.sort_values(ascending=True)
+
+
+feat_importances=feat_importances[-25:]
+print("Feature importances:")
+print(feat_importances)
+
+# Optional: Plot the feature importances as a bar chart.
+plt.figure(figsize=(10,10))
+feat_importances.plot(kind='barh')
+plt.title("Feature Importances")
+plt.ylabel("Importance Score")
+plt.xlabel("Features")
+plt.tight_layout()
+# creating a dictionary
+font = {'size': 8}
+ 
+# using rc function
+plt.rc('font', **font)
+plt.show()
+
+```
