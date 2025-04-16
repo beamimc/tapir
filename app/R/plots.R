@@ -57,7 +57,7 @@ plot_gene_txs <- function(gene_symbol , output_file, mean_diffs_DTU, pvals) {
     mutate(score = (1 - pval) * sign(mean_diff),
            color = custom_pal(score))
   
-  hilite <- df_values %>% select(transcript, color)
+  hilite <- df_values %>% dplyr::select(transcript, color)
   
   # Dynamically adjust plot dimensions based on transcript count
   plotT_height <- round(length(assay_transcripts) / 3, 3)  # Height scales with transcript count
@@ -174,7 +174,8 @@ line_plot_txp_comparison  <- function(prop, cd1 = "ctrl", cd2 = "exp"){
     theme_classic() +
     labs(x = "Condition", y = "Proportion", title = "Proportion of Transcripts by Condition") +
     theme(axis.text.x = element_text(angle = 0))
-  ggplotly(p)
+  ggplotly(p)%>% 
+    layout(margin = list(t = 100))
 }
 
 
@@ -216,7 +217,8 @@ barplot_meandifs <- function(mean_diffs_DTU, pvals, cd1 = "ctrl", cd2 = "exp"){
     scale_x_discrete(labels = function(x) substr(x, 1, 10)) +
     theme_classic() +
     theme(axis.text.x = element_text(angle = 45))#, hjust = 1)) # Rotate x labels for readability
-  ggplotly(p)
+  ggplotly(p)%>% 
+    layout(margin = list(t = 100))
   
 }
 

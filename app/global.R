@@ -6,7 +6,7 @@ library(grid)                  # Grid-based graphics
 library(dplyr)                 # Data manipulation
 library(here)                  # Project root management
 library(scales)                # Scale functions
-
+library(stringr)
 
 # Genomics & Annotation --------------------------------------------------------
 library(SummarizedExperiment)  # Genomic data structures
@@ -74,7 +74,7 @@ sig_res <- rowData(se)[["fitDTUResult_exp_vs_ctrl"]] |>
   tibble::as_tibble() |>
   bind_cols(as.data.frame(rowData(se)[, 1:4])) |>
   filter(empirical_FDR < 0.1) |>
-  select(gene_id, isoform_id, symbol, estimates, empirical_pval, empirical_FDR) |>
+  dplyr::select(gene_id, isoform_id, symbol, estimates, empirical_pval, empirical_FDR) |>
   arrange(empirical_pval)
 
 # Clean isoform_id in significant results
@@ -130,7 +130,7 @@ significant_transcripts <- sig_res$isoform_id
 gene_data <- data.frame(
   Transcript = significant_transcripts,
   Symbol = sig_res$symbol,
-  P_Value = sig_res$empirical_pval,
+  P_Value = round(sig_res$empirical_pval,3),
   stringsAsFactors = FALSE
 )
 
