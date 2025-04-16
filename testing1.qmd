@@ -41,7 +41,7 @@ meta <- read_delim(here("data", "glinos_metadata.csv"))
 colnames(meta)[10] <- "total_reads"
 meta <- meta |>
   mutate(condition = str_extract(sample_id, "(ctrl|exp)")) |>
-  select(sample_id, sample_name, condition, contains("read") | contains("3_prime")) |>
+  dplyr::select(sample_id, sample_name, condition, contains("read") | contains("3_prime")) |>
   arrange(condition, sample_name)
 
 rnames <- counts$transcript
@@ -208,7 +208,7 @@ sig_res <- rowData(se)[["fitDTUResult_exp_vs_ctrl"]] |>
   dplyr::filter(empirical_FDR < .1) |>
   dplyr::select(gene_id, isoform_id, symbol, estimates, empirical_pval, empirical_FDR) |>
   dplyr::arrange(empirical_pval)
-#write.csv(sig_res, file=here("data","glinos_saturn_dtu.csv"), quote=FALSE, row.names=FALSE)
+write.csv(sig_res, file=here("data","glinos_saturn_dtu.csv"), quote=FALSE, row.names=FALSE)
 sig_res
 ```
 
@@ -235,11 +235,16 @@ Now we have to do a little metadata cleanup to make everything easy to compare.
 First we clean up the isoform identifiers:
 
 ```{r}
-sig_res <- sig_res |>
+se <- se |>
   mutate(
     isoform_id = str_replace(isoform_id, "(_ENSG.*?)_ENSG.*","\\1"),
     isoform_id = str_replace(isoform_id, "(ENST.*?)_ENSG.*","\\1")
   )
+```
+
+```{r}
+write.csv(sig_res, file=here("data","glinos_saturn_dtu.csv"), quote=FALSE, row.names=FALSE)
+
 ```
 
 Next change the names of the exons:
@@ -337,8 +342,8 @@ sig_exons #59 transcripts GRangesList // 34 genes
 ## for some reason im loosing 2 transcripts:
 setdiff(sig_res$isoform_id, names(sig_exons))
 # #add manually
-# sig_exons <- c(sig_exons, GRangesList(exons["59d5f69f-18ce-4229-b091-4f57cfde2e0c"]))
-# sig_exons <- c(sig_exons, GRangesList(exons["b79cfcbb-8d15-48df-9ace-12af97d8b32f"]))
+sig_exons <- c(sig_exons, GRangesList(exons["59d5f69f-18ce-4229-b091-4f57cfde2e0c"]))
+sig_exons <- c(sig_exons, GRangesList(exons["b79cfcbb-8d15-48df-9ace-12af97d8b32f"]))
 
 flat_sig_exons <- unlist(sig_exons)
   
@@ -600,15 +605,16 @@ get_sliding_windows <- function(upstr_ranges, #input is GRanges object
     step <-  window_width - overlap 
     n_windows <- ceiling((width_upstream - window_width) / step) + 1
     
-    windows <- upstr_ranges |> slide_ranges( width = window_width, 
+    windows <- upstr_ranges |> slide_ranges( width = window_width,  #GaRagnes
                                              step = step)#divive in windows
     seq_windows <-  Hsapiens |>  
                      getSeq(windows) |> 
-                     RNAStringSet() 
+                     RNAStringSet()  #RNASTring
     # RNAStringSet result has n_windows x #exons rows eg if 158 exons, and 10 windows , we will get 1580 rows, 10 fisrt are the windows of the first exon, 11-20 rows are the windows for the next exon etc
     windows_bp <- get_bp_percent(seq_windows) #calculate %bp of all the windows
     # dim(windows_bp)
     
+    #pipi
     result_list <- vector("list", n_windows)
     for (window_index in 1:n_windows){ 
       indices <- seq(from = window_index, 
@@ -667,6 +673,12 @@ dim(non_spliced_exons_df)
 
 total_df <- dplyr::bind_rows(spliced_exons_df, non_spliced_exons_df) #features df for ML with both SE and non SE exons label 1/0
 dim(total_df)
+```
+
+```{r}
+## sabe df into file to use it in python for ML 
+write.csv(total_df, "exon_features.csv", row.names = FALSE)
+
 ```
 
 Make % plots
