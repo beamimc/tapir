@@ -1,0 +1,269 @@
+# Statistical testing
+
+Downloading Glinos *et al.* dataset (GTEx, PTBP1 knockdown)
+
+```{r}
+#| eval: false
+library(here)
+# https://drive.google.com/file/d/1ATHgwFlIMmI651C5TYtiBxm2atTvbBYn/view?usp=sharing
+# counts
+url <- "https://drive.google.com/uc?export=download&id=1ATHgwFlIMmI651C5TYtiBxm2atTvbBYn"
+filename <- "quantification_flair_filter.counts.txt.gz"
+path <- here("data", filename)
+if (!file.exists(path)) {
+  download.file(url, path)
+}
+# GTF
+url <- "https://drive.google.com/uc?export=download&id=1S0TRXoXsfnXwJ0Dh5bLqVmyvFAAALFMU"
+filename <- "flair_filter_transcripts.gtf.gz"
+path <- here("data", filename)
+if (!file.exists(path)) {
+  download.file(url, path)
+}
+# metadata
+url <- "https://drive.google.com/uc?export=download&id=1LpYPXXhMtUV3vMG7SMLV69-JxZfc59o2"
+filename <- "glinos_metadata.csv"
+path <- here("data", filename)
+if (!file.exists(path)) {
+  download.file(url, path)
+}
+```
+
+Assembling the object:
+
+```{r}
+#| eval: false
+library(readr)
+library(dplyr)
+library(stringr)
+counts <- read_delim(here("data", "quantification_flair_filter.counts.txt.gz"))
+meta <- read_delim(here("data", "glinos_metadata.csv"))
+colnames(meta)[10] <- "total_reads"
+meta <- meta |>
+  mutate(condition = str_extract(sample_id, "(ctrl|exp)")) |>
+  select(sample_id, sample_name, condition, contains("read") | contains("3_prime")) |>
+  arrange(condition, sample_name)
+
+rnames <- counts$transcript
+counts <- as.matrix(counts[,meta$sample_id]) # subset to the knockdown
+rownames(counts) <- rnames
+```
+
+```{r}
+#| eval: false
+library(SummarizedExperiment)
+se <- SummarizedExperiment(list(counts = counts),
+                           colData = meta)
+saveRDS(se, file=here("data", "glinos_se.rds"))
+```
+
+```{r}
+#| message: false
+library(here)
+library(SummarizedExperiment)
+se <- readRDS(here("data", "glinos_se.rds"))
+keep <- rowSums(assay(se) >= 10) >= 6
+table(keep)
+se <- se[keep,]
+```
+
+```{r}
+#| include: false
+if (tryCatch(packageVersion("tximeta") < "1.25.1", error = function(e) TRUE)) {
+  message("installing dev version of tximeta")
+  remotes::install_github("thelovelab/tximeta")
+}
+set.seed(5) # for jittered plots
+```
+
+```{r}
+#| message: false
+library(DESeq2)
+library(tximeta)
+library(stringr)
+colsums <- colSums(assay(se, "counts"))
+cpm <- t(t(assay(se, "counts")) / colsums * 1e6)
+assay(se, "abundance") <- cpm
+assay(se, "length", withDimnames=FALSE) <- matrix(1000, nrow=nrow(se), ncol=ncol(se))
+se$condition <- factor(se$condition, c("ctrl","exp"))
+```
+
+```{r}
+#| message: false
+library(dplyr)
+library(stringr)
+library(GenomicFeatures)
+#txdb <- makeTxDbFromGFF(here("data","flair_filter_transcripts.gtf.gz"))
+#saveDb(txdb, file=here("data","flair_filter_transcripts.sqlite"))
+txdb <- loadDb(here("data","flair_filter_transcripts.sqlite"))
+exons <- exonsBy(txdb, by="tx")
+txps <- AnnotationDbi::select(txdb, keys(txdb, "TXID"), c("TXNAME","GENEID"), "TXID") |>
+  tibble::as_tibble() |>
+  dplyr::mutate(TXID = as.character(TXID))
+# better names for exons:
+length(exons)
+all.equal(names(exons), txps$TXID)
+txps <- txps |>
+  dplyr::mutate(new_name = case_when(
+    str_detect(TXNAME,"ENST") ~ TXNAME,
+    TRUE ~ paste0(GENEID, "-", str_sub(TXNAME, 1, 8))
+  ))
+names(exons) <- txps$new_name
+saveRDS(exons, file=here("data","glinos_exons.rds"))
+```
+
+```{r}
+# subsetting to only txp/gene with complete metadata
+# and renaming to have more legible names
+rownames(se) <- str_replace(rownames(se),"_ENSG\\d+\\.\\d+$","")
+table(rownames(se) %in% txps$TXNAME) # these appear to be not genes
+txps <- txps |>
+  filter(TXNAME %in% rownames(se))
+se <- se[txps$TXNAME,]
+rownames(se) <- txps$new_name
+rowData(se)$isoform_id <- txps$new_name
+rowData(se)$gene_id <- txps$GENEID
+tx2gene <- rowData(se)[,c("isoform_id","gene_id")]
+gse <- summarizeToGene(se, tx2gene = tx2gene, skipRanges=TRUE)
+saveRDS(gse, file=here("data","glinos_gene_counts.rds"))
+```
+
+```{r PCA}
+dds <- DESeqDataSet(gse, ~condition)
+keep <- rowSums(counts(dds) >= 10) >= 6
+table(keep)
+dds <- DESeq(dds, minRep=Inf)
+res <- results(dds, cooksCutoff=FALSE)
+summary(res)
+```
+
+```{r glinos-plotcounts}
+library(org.Hs.eg.db)
+gene_anno <- DataFrame(gene_id = str_replace(rownames(dds),"\\.\\d+",""),
+                       baseMean = round(rowData(dds)$baseMean))
+gene_anno$symbol <- org.Hs.eg.db |> mapIds(gene_anno$gene_id, "SYMBOL", "ENSEMBL")
+gene_anno$symbol[is.na(gene_anno$symbol)] <- gene_anno$gene_id[is.na(gene_anno$symbol)]
+rowData(dds)$symbol <- gene_anno$symbol
+idx <- which(rowData(dds)$symbol == "PTBP1")
+plotCounts(dds, gene=idx)
+```
+
+```{r glinos-pca}
+vsd <- vst(dds, blind=FALSE)
+plotPCA(vsd)
+```
+
+```{r}
+#saveRDS(dds, file=here("data", "glinos_deseq2_gene.rds"))
+#saveRDS(vsd, file=here("data", "glinos_vst_gene.rds"))
+```
+
+```{r}
+#| eval: false
+library(Glimma)
+g <- glimmaMA(
+  dds,
+  groups=dds$condition,
+  anno=gene_anno[,-1],
+  main="Glinos et al. (2022) - PTBP1 knockdown", # title above left summary plot
+  transform.counts="cpm",
+  test="Wald", name="condition_exp_vs_ctrl",
+  independentFiltering=FALSE,
+  cooksCutoff=FALSE
+)
+htmlwidgets::saveWidget(g, here("data","glinos_ma-plot.html"))
+```
+
+```{r}
+#| message: false
+library(plyxp)
+xp <- se |>
+  new_plyxp()
+xp <- xp |>
+  mutate(rows(gene = str_replace(gene_id, "\\.\\d+", ""),
+              symbol = mapIds(org.Hs.eg.db, gene, "SYMBOL", "ENSEMBL"),
+              symbol = dplyr::case_when(
+                is.na(symbol) ~ gene,
+                TRUE ~ symbol
+              )))
+tab <- table(rowData(se)$gene_id)
+one_isoform_gene <- names(tab)[ tab == 1 ]
+xp <- xp |>
+  filter(rows(!gene_id %in% one_isoform_gene)) |>
+  arrange(rows(gene_id))
+```
+
+```{r}
+head(table(table(rowData(xp)$gene_id))) # confirm no single isoform genes
+```
+
+```{r}
+se <- se(xp)
+```
+
+```{r}
+# 5 seconds
+library(satuRn)
+se <- satuRn::fitDTU(se, formula=~0 + condition)
+```
+
+```{r}
+design <- model.matrix(~0 + condition, colData(se))
+colnames(design)
+colnames(design) <- levels(se$condition)
+L <- limma::makeContrasts(
+  exp_vs_ctrl = exp - ctrl,
+  levels = design
+)
+L # contrast matrix
+```
+
+```{r saturn-test}
+se <- satuRn::testDTU(
+  object = se,
+  contrasts = L,
+  diagplot1 = TRUE,
+  diagplot2 = TRUE
+)
+saveRDS(se, file=here("data","glinos_saturn_dtu.rds"))
+```
+
+```{r}
+sig_res <- rowData(se)[["fitDTUResult_exp_vs_ctrl"]] |>
+  tibble::as_tibble() |>
+  dplyr::bind_cols(as.data.frame(rowData(se)[,1:4])) |>
+  dplyr::filter(empirical_FDR < .1) |>
+  dplyr::select(gene_id, isoform_id, symbol, estimates, empirical_pval, empirical_FDR) |>
+  dplyr::arrange(empirical_pval)
+write.csv(sig_res, file=here("data","glinos_saturn_dtu.csv"), quote=FALSE, row.names=FALSE)
+sig_res
+```
+
+```{r}
+cpm <- assay(se, "abundance")[rowData(se)$symbol == "PDLIM7",]
+rownames(cpm) <- seq_len(nrow(cpm))
+colnames(cpm) <- se$condition
+round(cpm)
+```
+
+```{r}
+#| eval: false
+library(plyranges)
+upstr <- exons[[pos_coef_txps]] |>
+  filter_by_non_overlaps(e[[neg_coef_txps]]) |>
+  flank_upstream(100)
+```
+
+```{r}
+#| eval: false
+library(Biostrings)
+library(BSgenome)
+library(BSgenome.Hsapiens.UCSC.hg38)
+Hsapiens |>
+  getSeq(upstr) |>
+  RNAStringSet()
+```
+
+```{r}
+sessionInfo()
+```

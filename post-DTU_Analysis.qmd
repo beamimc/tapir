@@ -1,0 +1,283 @@
+---
+title: "post-DTU Analysis - prev run testingv2.qmd"
+---
+
+load data
+
+```{r}
+# Loas SummarizeExperiment with DTU columns
+se <- readRDS(here::here("data", "glinos_saturn_dtu.rds"))
+
+# Load table Object with satuRn DTU Analysis 
+sig_res <- read.csv(here::here("data", "glinos_saturn_dtu.csv"), 
+                    stringsAsFactors = FALSE)|>
+            as_tibble()
+
+
+
+# Load Transcript Database (TxDb) & Prepare for Annotation ---------------------
+txdb <- loadDb(here("data","flair_filter_transcripts.sqlite"))
+
+exons <- readRDS(here::here("data", "glinos_exons.rds"))
+
+```
+
+Plot gardener example
+
+```{r}
+library(plotgardener)
+library(org.Hs.eg.db)
+tx_from_symbol <- sig_res %>%
+                  filter(symbol == "PDLIM7")%>%
+                  pull(isoform_id)
+tx_from_symbol
+
+exons[names(exons) %in% tx_from_symbol]
+
+
+db_assembly <- plotgardener::assembly(
+  Genome = "hg38",
+  TxDb = txdb,
+  OrgDb = org.Hs.eg.db,
+  gene.id.column = "GENEID",
+  display.column = "GENEID",
+  BSgenome = NULL
+)  
+
+```
+
+# Get spliced exons and non-spliced exons
+
+```{r}
+library(plyranges)
+
+sig_exons <- exons[names(exons) %in% sig_res$isoform_id] #get GRangesList only from the DTUs 61 - 35 genes
+#62 transcripts GRangesList - 1 duplicate `ENSG00000198467.13-305f0cb0` elements 22 and 24
+#remove duplicate 
+sig_exons <- sig_exons[-22]
+
+# set if exons and internal or boundary 
+sig_exons <- GRangesList(lapply(sig_exons, function(gr) {
+    if (length(gr) > 0) {
+        mcols(gr)$internal <- rep(TRUE, length(gr))
+        mcols(gr)$internal[1] <- FALSE
+        mcols(gr)$internal[length(gr)] <- FALSE
+    }
+    gr
+}))
+
+flat_sig_exons <- unlist(sig_exons)
+  
+sig_res <-  sig_res %>%
+  dplyr::mutate(sign = sign(estimates))
+
+
+#include coef +/- column from the DTU analysis saturn 
+flat_sig_exons$coef <- sig_res$estimates[match(names(flat_sig_exons), sig_res$isoform_id)]
+flat_sig_exons$sign <- sig_res$sign[match(names(flat_sig_exons), sig_res$isoform_id)]
+
+#include gene name for each transcript name 
+flat_sig_exons$gene <- sig_res$gene_id[match(names(flat_sig_exons), sig_res$isoform_id)]
+flat_sig_exons$isoform <- names(flat_sig_exons)
+
+# group by gene and coefficient, then project down to flatten version
+x_flat <-flat_sig_exons |>
+        group_by(gene, sign) |>
+        reduce_ranges_directed(
+          min.gapwidth = 0L,
+          avg_coef = mean(coef),
+          ids = paste(isoform, collapse=","),
+          internal = all(internal) 
+        ) |>
+    mutate(mixed = grepl(",", ids))
+#exons overlap but are not exactly the same,  reduce_ranges()  will merge them into a single contiguous range that spans the union of all overlapping regions 
+# Overlapping exons → merged into a single continuous exon.
+# Non-overlapping exons → remain separate.
+
+x_flat$aux_id <- seq(length(x_flat))
+
+# take the flattened `+` exons and remove the flatted `-` exons --> result is exons spliced by PTBP1
+spliced_exons <-  x_flat |>
+                  filter(sign == 1) |> # Selects only the flattened + strand exons
+                  filter_by_non_overlaps_directed( # Removes the parts that overlap with the - strand exons
+                      x_flat |> filter(sign == -1)
+                      )
+
+length(spliced_exons) # n of spliced exons 
+length(unique(spliced_exons$gene)) # n of dif genes
+unique(spliced_exons$sign) # all should be + 
+
+spliced_exons |> filter(internal==FALSE) # there are 25 exons tat are not internal 
+
+non_spliced_exons <- x_flat |>
+  filter(!(aux_id %in% spliced_exons$aux_id)) 
+
+
+length(non_spliced_exons) # n of  exons 
+length(unique(non_spliced_exons$gene)) # n of dif genes
+unique(non_spliced_exons$sign) 
+
+
+table(x_flat$sign, useNA = "ifany")
+
+
+```
+
+## Filter our non-internal selected skipped exons and select non-skipped neighbors
+
+```{r}
+x_flat_internal <- x_flat |> filter(internal ==TRUE)
+
+# take the flattened `+` exons and remove the flatted `-` exons --> result is exons spliced by PTBP1
+spliced_exons <- x_flat_internal |>
+                  filter(sign == 1) |> # Selects only the flattened + strand exons
+                  filter_by_non_overlaps_directed( # Removes the parts that overlap with the - strand exons
+                      x_flat_internal |> filter(sign == -1)
+                      ) |>
+                  mutate(SE = TRUE)
+
+length(spliced_exons) # n of spliced exons 
+length(unique(spliced_exons$gene)) # n of dif genes
+unique(spliced_exons$sign) # all should be + 
+
+
+non_spliced_exons <- x_flat_internal |>
+  filter(!(aux_id %in% skipped_exons$aux_id)) 
+
+
+#keep only the nearest exon
+non_SE_auxid <-pair_nearest(skipped_exons, non_spliced_exons)$aux_id.y #only 22 unique -- many SE exons have the same nearest
+non_spliced_exons <- x_flat_internal |> filter(aux_id %in% non_SE_auxid)
+length(non_spliced_exons) # n of  exons 
+length(unique(non_spliced_exons$gene)) # n of dif genes
+unique(non_spliced_exons$sign) 
+
+## many SE are sequential... REVISE  !!
+skipped_exons$aux_id
+```
+
+# Get upstream seq from all exons
+
+```{r}
+
+library(plyranges)
+width_upstream <- 100
+
+upstr_spliced_exons <- spliced_exons %>%
+        flank_upstream(width = width_upstream) 
+# The result will be another GRanges object that still contains 158 ranges,
+# but each range now represents the upstream flanking region of the corresponding exon. 
+
+upstr_non_spliced_exons <- non_spliced_exons %>%
+        flank_upstream(width = width_upstream) 
+# The result will be another GRanges object that still contains 158 ranges,
+# but each range now represents the upstream flanking region of the corresponding exon. 
+```
+
+```{r}
+library(Biostrings)
+library(BSgenome)
+library(BSgenome.Hsapiens.UCSC.hg38)
+
+seq_spliced_exons <-  Hsapiens |>  ## RNAStringSet object of length 150:
+                       getSeq(upstr_spliced_exons) |>
+                       RNAStringSet() 
+metadata(seq_spliced_exons)$aux_id <- upstr_spliced_exons$aux_id
+
+
+seq_non_spliced_exons <-  Hsapiens |>  ## RNAStringSet object of length 150:
+                       getSeq(upstr_non_spliced_exons) |>
+                       RNAStringSet()
+
+metadata(seq_non_spliced_exons)$aux_id <- upstr_non_spliced_exons$aux_id
+```
+
+## Create features for ML from the exons upstream sequences
+
+```{r}
+source(here::here("aux_postDTU.R"))
+
+dim(get_windows(upstr_spliced_exons))
+dim(get_windows(upstr_non_spliced_exons))
+
+dim(get_sliding_windows(upstr_spliced_exons))
+dim(get_sliding_windows(upstr_non_spliced_exons))
+
+spliced_exons_df <- create_exon_df(seq_spliced_exons, 
+                                   upstr_spliced_exons,
+                                   1)
+dim(spliced_exons_df)
+
+non_spliced_exons_df <- create_exon_df(seq_non_spliced_exons, 
+                                       upstr_non_spliced_exons,
+                                       0)
+dim(non_spliced_exons_df)
+
+total_df <- dplyr::bind_rows(spliced_exons_df, non_spliced_exons_df) #features df for ML with both SE and non SE exons label 1/0
+dim(total_df)
+
+## sabe df into file to use it in python for ML 
+write.csv(total_df, "exon_features_v2.csv", row.names = FALSE)
+```
+
+Plots
+
+```{r}
+
+bp_percent <-  get_bp_percent(seq_spliced_exons)
+barplot_bppercent(bp_percent)
+
+dibp_percent <-  get_dibp_features(seq_spliced_exons)
+barplot_bppercent(dibp_percent)
+
+
+tribp_percent <-  get_tribp_features(seq_spliced_exons)
+barplot_bppercent(tribp_percent)
+
+
+bp_percent <-  get_bp_percent(seq_non_spliced_exons)
+barplot_bppercent(bp_percent)
+
+dibp_percent <-  get_dibp_features(seq_non_spliced_exons)
+barplot_bppercent(dibp_percent)
+
+
+tribp_percent <-  get_tribp_features(seq_non_spliced_exons)
+barplot_bppercent(tribp_percent)
+
+```
+
+```{r}
+# % of bp
+se_percent <-  get_bp_percent(seq_spliced_exons)
+non_se_percent <-  get_bp_percent(seq_non_spliced_exons)
+barplot_bppercent2(se_percent, non_se_percent)
+
+# % of pairs
+se_percent <-  get_dibp_features(seq_spliced_exons)
+non_se_percent <-  get_dibp_features(seq_non_spliced_exons)
+barplot_bppercent2(se_percent, non_se_percent)
+
+# % of triplets
+se_percent <-  get_tribp_features(seq_spliced_exons)
+non_se_percent <-  get_tribp_features(seq_non_spliced_exons)
+barplot_bppercent2(se_percent, non_se_percent)
+```
+
+```{r}
+#windoes is #exons x #windows*4 (not summarized by window yet)
+spliced_exons_windows <- get_sliding_windows(upstr_spliced_exons,#slid windows
+                                          window_width = 10,
+                                          width_upstream = width_upstream, ## maches flankupsteam 
+                                          overlap = 5
+                                      )
+nonspliced_exons_windows <- get_sliding_windows(upstr_non_spliced_exons,#slid windows
+                                          window_width = 10,
+                                          width_upstream = width_upstream, ## maches flankupsteam 
+                                          overlap = 5
+                                      )
+plot_exon_summary(spliced_exons_windows, 
+                  nonspliced_exons_windows,
+                  nucleotide = "G")
+
+```
