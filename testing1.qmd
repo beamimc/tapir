@@ -151,7 +151,7 @@ library(plyxp)
 xp <- se |>
   new_plyxp()
 xp <- xp |>
-  mutate(rows(gene = str_extract(gene_id, "(ENSG.*)\\..*", group=1),
+  dplyr::mutate(rows(gene = str_extract(gene_id, "(ENSG.*)\\..*", group=1),
               symbol = mapIds(org.Hs.eg.db, gene, "SYMBOL", "ENSEMBL"),
               symbol = dplyr::case_when(
                 is.na(symbol) ~ gene,
@@ -236,10 +236,19 @@ First we clean up the isoform identifiers:
 
 ```{r}
 se <- se |>
-  mutate(
+  dplyr::mutate(
     isoform_id = str_replace(isoform_id, "(_ENSG.*?)_ENSG.*","\\1"),
     isoform_id = str_replace(isoform_id, "(ENST.*?)_ENSG.*","\\1")
   )
+```
+
+\
+
+```{r}
+rowData(se)$isoform_id <- rowData(se)$isoform_id %>%
+  str_replace("(_ENSG.*?)_ENSG.*", "\\1") %>%
+  str_replace("(ENST.*?)_ENSG.*", "\\1")
+
 ```
 
 ```{r}
@@ -348,7 +357,7 @@ sig_exons <- c(sig_exons, GRangesList(exons["b79cfcbb-8d15-48df-9ace-12af97d8b32
 flat_sig_exons <- unlist(sig_exons)
   
 sig_res <-  sig_res %>%
-  mutate(sign = sign(estimates))
+  dplyr::mutate(sign = sign(estimates))
 
 
 #include coef +/- column from the DTU analysis saturn 
@@ -396,6 +405,14 @@ unique(non_spliced_exons$sign)
 
 table(x_flat$sign, useNA = "ifany")
 
+
+```
+
+```{r}
+
+```
+
+```{r}
 
 ```
 
@@ -481,7 +498,7 @@ toy_x <- toy_df |>
   as_granges()
 
 toy_x <- toy_x |>
-  mutate(sign = sign(coef))
+  dplyr::mutate(sign = sign(coef))
 
 toy_flat <- toy_x |>
   group_by(gene, sign) |>
@@ -600,7 +617,7 @@ get_sliding_windows <- function(upstr_ranges, #input is GRanges object
                                 overlap = 5 # you can do overlap = 0 for non-ovelp win
                                 ){
     #number of windows generated given the width and the length of the total range region 
-    n_windows <- width_upstream / window_width 
+
     # calc step  # if step == window_width slide_ranges is equiv to tile_ranges 
     step <-  window_width - overlap 
     n_windows <- ceiling((width_upstream - window_width) / step) + 1
@@ -633,7 +650,73 @@ get_sliding_windows <- function(upstr_ranges, #input is GRanges object
 }
 dim(get_sliding_windows(upstr_spliced_exons))
 dim(get_sliding_windows(upstr_non_spliced_exons))
+```
 
+```{r}
+get_sliding_windows <- function(upstr_ranges, #input is GRanges object 
+                                window_width = 10,
+                                width_upstream = 100, ## maches flankupsteam - i should fix to not have to hardcode 
+                                overlap = 5 # you can do overlap = 0 for non-ovelp win
+                                ){
+  
+  # calc step  # if step == window_width slide_ranges is equiv to tile_ranges 
+    step <-  window_width - overlap 
+    n_windows <- ceiling((width_upstream - window_width) / step) + 1
+    
+    windows <- upstr_ranges |> slide_ranges( width = window_width,  #GaRagnes
+                                             step = step)#divive in windows
+    seq_windows <-  Hsapiens |>  
+                     getSeq(windows) |> 
+                     RNAStringSet()  #RNASTring
+    # RNAStringSet result has n_windows x #exons rows eg if 158 exons, and 10 windows , we will get 1580 rows, 10 fisrt are the windows of the first exon, 11-20 rows are the windows for the next exon etc
+    windows_bp <- get_bp_percent(seq_windows) #calculate %bp of all the windows
+    
+    windows_meta <- as.data.frame(windows)[, c("strand", "partition")]
+    
+    # Combine the matrix and the metadata by column-binding
+    combined <- cbind(windows_bp, windows_meta)
+    
+    windows_df <- as.data.frame(combined)
+
+  # Group by partition (and strand, if desired) and create a new column "window_label"
+  windows_df <- windows_df %>%
+    group_by(partition, strand) %>% 
+    mutate(window_order = if (first(as.character(strand)) == "+") {
+        row_number()                # For '+' strand: 1, 2, 3, ...
+    } else {
+        n() - row_number() + 1       # For '-' strand: reverse order
+    },
+    window_label = paste0("w", window_order)) %>%
+    ungroup()
+  
+  # Create a new data frame with one row per partition and columns for each window-nucleotide combination
+  final_df <- windows_df %>%
+    # Pivot the nucleotide columns (A, C, G, U) into long format
+    pivot_longer(
+      cols = c("A", "C", "G", "U"),
+      names_to = "Nucleotide",
+      values_to = "Value"
+    ) %>%
+    # Create a new column combining window label and nucleotide (e.g., "w1_A")
+    mutate(Window_Nucleotide = paste0(window_label, "_", Nucleotide)) %>%
+    # Select only the columns needed for pivoting: partition, the combined label, and value
+    select(partition, Window_Nucleotide, Value) %>%
+    # Pivot wider so that each Window_Nucleotide becomes its own column
+    pivot_wider(
+      id_cols = partition,
+      names_from = Window_Nucleotide,
+      values_from = Value
+    )%>%
+  # Remove the partition column
+  select(-partition)
+  
+  final_df
+  matrix_df <- as.matrix(final_df)
+  return(matrix_df)
+}
+
+dim(get_sliding_windows(upstr_spliced_exons))
+dim(get_sliding_windows(upstr_non_spliced_exons))
 ```
 
 Create df with all the features (% of bp, di, tri, and sliding windows)
@@ -752,7 +835,7 @@ library(plotly)
 barplot_bppercent2 <- function(mat1, mat2, 
                                group1_label = "spliced", 
                                group2_label = "non-spliced",
-                               group1_color = "#F84040",  # default blue
+                               group1_color = "#F84040", 
                                group2_color = "skyblue") {
   
   # Convert each matrix to a data frame, add sample names and a group identifier
@@ -829,4 +912,113 @@ barplot_bppercent2(se_percent, non_se_percent)
 se_percent <-  get_tribp_features(seq_spliced_exons)
 non_se_percent <-  get_tribp_features(seq_non_spliced_exons)
 barplot_bppercent2(se_percent, non_se_percent)
+```
+
+```{r}
+library(reshape2)
+library(ggplot2)
+
+library(reshape2)
+library(ggplot2)
+library(dplyr)
+
+plot_exon_summary <- function(spliced_exons_windows, 
+                              nonspliced_exons_windows = NULL, 
+                              nucleotide = "U",
+                              custom_colors = c("Spliced" = "#F84040", 
+                                                "Non-Spliced" = "skyblue"),
+                              size = 100, 
+                              step = 5)
+                                {
+  # -------------------------------
+  # Process the spliced_exons_windows data
+  # -------------------------------
+  selected_cols_spliced <- grep(nucleotide, colnames(spliced_exons_windows), value = TRUE)
+  if (length(selected_cols_spliced) == 0) {
+    stop("No columns found matching the pattern ", nucleotide, " in spliced_exons_windows")
+  }
+  
+  sub_matrix_spliced <- spliced_exons_windows[, selected_cols_spliced, drop = FALSE]
+  
+  # Convert spliced matrix to long format and label dataset as "Spliced"
+  df_spliced <- melt(sub_matrix_spliced, varnames = c("Row", "Window"), value.name = "Value")
+  df_spliced$Dataset <- "Spliced"
+  
+  # -------------------------------
+  # Process the nonspliced_exons_windows data (if provided)
+  # -------------------------------
+  if (!is.null(nonspliced_exons_windows)) {
+    selected_cols_nonspliced <- grep(nucleotide, colnames(nonspliced_exons_windows), value = TRUE)
+    if (length(selected_cols_nonspliced) == 0) {
+      stop("No columns found matching the pattern ", nucleotide, " in nonspliced_exons_windows")
+    }
+    
+    sub_matrix_nonspliced <- nonspliced_exons_windows[, selected_cols_nonspliced, drop = FALSE]
+    
+    # Convert nonspliced matrix to long format and label dataset as "Non-Spliced"
+    df_nonspliced <- melt(sub_matrix_nonspliced, varnames = c("Row", "Window"), value.name = "Value")
+    df_nonspliced$Dataset <- "Non-Spliced"
+    
+    # Combine both datasets
+    long_df <- rbind(df_spliced, df_nonspliced)
+    
+    # Ensure the Window factor levels come from the spliced dataset (assumed common order)
+    long_df$Window <- factor(long_df$Window, levels = selected_cols_spliced)
+    
+  } else {
+    long_df <- df_spliced
+    long_df$Window <- factor(long_df$Window, levels = selected_cols_spliced)
+  }
+  
+  ##Create labels xticks
+    levels_x <- levels(long_df$Window)
+    substr <- paste0("_", nucleotide)
+  # Remove the "w" and convert the remaining part to numeric
+  window_number <- as.numeric(sub(substr,"",sub("w", "", levels_x)))
+  
+  # Compute the new labels
+  x_labels <- -size + (window_number - 1) * step
+  # -------------------------------
+  # Create the plot
+  # -------------------------------
+  # - geom_point plots the individual datapoints with jitter
+  # - stat_summary (with fun = mean) plots a line of mean values per group (Dataset)
+  # - stat_summary (with fun.data = mean_se) adds error bars based on the standard error
+  p <- ggplot(long_df, aes(x = Window, y = Value, color = Dataset)) +
+    # geom_point(position = position_jitter(width = 0.1), alpha = 0.2) +
+    stat_summary(fun = mean, geom = "line", aes(group = Dataset), size = 1) +
+    stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.2) +
+    scale_color_manual(values = custom_colors)+
+     # Modify the x-axis labels:
+    # Extract the numeric portion from "wN" and compute new labels using size and wsize.
+    scale_x_discrete(labels = x_labels) +
+    labs(title = paste( nucleotide, "% per window"),
+         x = "Window(upstream position)", y = "%bp") +
+    theme_classic()
+  
+  print(p)
+  
+  # Optionally, return the long data frame for inspection
+  invisible(long_df)
+}
+
+
+```
+
+```{r}
+#windoes is #exons x #windows*4 (not summarized by window yet)
+spliced_exons_windows <- get_sliding_windows(upstr_spliced_exons,#slid windows
+                                          window_width = 10,
+                                          width_upstream = width_upstream, ## maches flankupsteam 
+                                          overlap = 5
+                                      )
+nonspliced_exons_windows <- get_sliding_windows(upstr_non_spliced_exons,#slid windows
+                                          window_width = 10,
+                                          width_upstream = width_upstream, ## maches flankupsteam 
+                                          overlap = 5
+                                      )
+plot_exon_summary(spliced_exons_windows, 
+                  nonspliced_exons_windows,
+                  nucleotide = "G")
+
 ```
