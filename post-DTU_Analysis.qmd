@@ -5,11 +5,17 @@ title: "post-DTU Analysis - prev run testingv2.qmd"
 load data
 
 ```{r}
+source(here::here("aux_postDTU.R"))
+source(here::here("app","R","plots.R"))
+
+```
+
+```{r}
 # Loas SummarizeExperiment with DTU columns
 se <- readRDS(here::here("data", "glinos_saturn_dtu.rds"))
 
 # Load table Object with satuRn DTU Analysis 
-sig_res <- read.csv(here::here("data", "glinos_saturn_dtu.csv"), 
+sig_res <- read.csv(here::here("data", "glinos_saturn_dtu_fdr05.csv"), 
                     stringsAsFactors = FALSE)|>
             as_tibble()
 
@@ -46,8 +52,6 @@ db_assembly <- plotgardener::assembly(
 
 ```
 
-# Get spliced exons and non-spliced exons
-
 ```{r}
 library(plyranges)
 
@@ -80,6 +84,14 @@ flat_sig_exons$sign <- sig_res$sign[match(names(flat_sig_exons), sig_res$isoform
 flat_sig_exons$gene <- sig_res$gene_id[match(names(flat_sig_exons), sig_res$isoform_id)]
 flat_sig_exons$isoform <- names(flat_sig_exons)
 
+
+```
+
+# Get down-regulated (skipped) exons v1
+
+```{r}
+
+
 # group by gene and coefficient, then project down to flatten version
 x_flat <-flat_sig_exons |>
         group_by(gene, sign) |>
@@ -94,66 +106,532 @@ x_flat <-flat_sig_exons |>
 # Overlapping exons → merged into a single continuous exon.
 # Non-overlapping exons → remain separate.
 
+
+## only use internal exons 
+x_flat <- x_flat |> filter(internal ==TRUE)
+
+
 x_flat$aux_id <- seq(length(x_flat))
 
+#filter keep only genes with coef + and coef- txps
+x_flat <- x_flat |>
+  group_by(gene) |>                                    # group by gene
+  filter(
+    n_distinct(ids)   > 1,                              # >1 unique ids
+    any(sign == -1),                                    # at least one –1
+    any(sign == +1)                                     # at least one +1
+  ) |>
+  ungroup()   
+
+
+
+x_flat |>
+  group_by(gene,ids) |>
+  summarise(
+    min_start = min(start),
+    max_end   = max(end)
+  ) 
+
 # take the flattened `+` exons and remove the flatted `-` exons --> result is exons spliced by PTBP1
-spliced_exons <-  x_flat |>
+downreg_exons <-  x_flat |>
                   filter(sign == 1) |> # Selects only the flattened + strand exons
                   filter_by_non_overlaps_directed( # Removes the parts that overlap with the - strand exons
                       x_flat |> filter(sign == -1)
-                      )
+                      )|>
+                  mutate(SE = TRUE)
 
-length(spliced_exons) # n of spliced exons 
-length(unique(spliced_exons$gene)) # n of dif genes
-unique(spliced_exons$sign) # all should be + 
+# 
+# #### quick remove ---- FIX!!!!!!!!
+# aux <- downreg_exons |>
+#      group_by(gene) |>    
+#      summarise(n = n()) |>
+#      as_tibble() 
+# filtered_genes <- aux |> filter(n<5) |> pull(gene)
+# downreg_exons <- downreg_exons |> filter(gene %in% filtered_genes)
+# downreg_exons |>
+#      group_by(gene) |>    
+#      summarise(n = n()) |>
+#      as_tibble() 
 
-spliced_exons |> filter(internal==FALSE) # there are 25 exons tat are not internal 
+length(downreg_exons) # n of spliced exons 
+length(unique(downreg_exons$gene)) # n of dif genes
+unique(downreg_exons$sign) # all should be + 
 
+
+# get all the exons not in downreg_exons
 non_spliced_exons <- x_flat |>
-  filter(!(aux_id %in% spliced_exons$aux_id)) 
+  filter(!(aux_id %in% downreg_exons$aux_id)) 
 
 
-length(non_spliced_exons) # n of  exons 
-length(unique(non_spliced_exons$gene)) # n of dif genes
-unique(non_spliced_exons$sign) 
+#keep only the nearest exon for nonreg_exons 
+nonreg_auxid <-pair_nearest(downreg_exons, non_spliced_exons)$aux_id.y #only 22 unique -- many SE exons have the same nearest
+nonreg_exons <- x_flat |> filter(aux_id %in% nonreg_auxid)
+length(nonreg_exons) # n of  exons 
+length(unique(nonreg_exons$gene)) # n of dif genes
+unique(nonreg_exons$sign) 
+
+## many SE are sequential... REVISE  !!
+downreg_exons$aux_id
+
+```
+
+# Get down-regulated (skipped) exons v2
+
+```{r}
+library(plyranges)
+
+sig_exons <- exons[names(exons) %in% sig_res$isoform_id] #get GRangesList only from the DTUs 61 tx - 35 genes
+#62 transcripts GRangesList - 1 duplicate `ENSG00000198467.13-305f0cb0` elements 22 and 24
+#remove duplicate 
+sig_exons <- sig_exons[-22]
+
+# set if exons and internal or boundary 
+sig_exons <- GRangesList(lapply(sig_exons, function(gr) {
+    if (length(gr) > 0) {
+        mcols(gr)$internal <- rep(TRUE, length(gr))
+        mcols(gr)$internal[1] <- FALSE
+        mcols(gr)$internal[length(gr)] <- FALSE
+    }
+    gr
+}))
+
+flat_sig_exons <- unlist(sig_exons)
+  
+sig_res <-  sig_res %>%
+  dplyr::mutate(sign = sign(estimates))
 
 
-table(x_flat$sign, useNA = "ifany")
+#include coef +/- column from the DTU analysis saturn 
+flat_sig_exons$coef <- sig_res$estimates[match(names(flat_sig_exons), sig_res$isoform_id)]
+flat_sig_exons$sign <- sig_res$sign[match(names(flat_sig_exons), sig_res$isoform_id)]
+
+#include gene name for each transcript name 
+flat_sig_exons$gene <- sig_res$gene_id[match(names(flat_sig_exons), sig_res$isoform_id)]
+flat_sig_exons$isoform <- names(flat_sig_exons)
+
+## only use internal exons 
+x_flat <- x_flat |> filter(internal ==TRUE)
+
+#filter keep only genes with coef + and coef- txps
+x_flat <- flat_sig_exons |>
+  group_by(gene) |>                                    # group by gene
+  filter(
+    n_distinct(isoform)   > 1,                              # >1 unique ids
+    any(sign == -1),                                    # at least one –1
+    any(sign == +1)                                     # at least one +1
+  ) |>
+  ungroup()   
+
+
+x_flat$aux_id <- seq(length(x_flat))
+
+#filter keep only genes with coef + and coef- txps
+x_flat <- x_flat |>
+  group_by(gene) |>                                    # group by gene
+  filter(
+    n_distinct(isoform)   > 1,                              # >1 unique ids
+    any(sign == -1),                                    # at least one –1
+    any(sign == +1)                                     # at least one +1
+  ) |>
+  ungroup()   
+
+
+# take the flattened `+` exons and remove the flatted `-` exons --> result is exons spliced by PTBP1
+downreg_exons <-  x_flat |>
+                  filter(sign == 1) |> # Selects only the flattened + strand exons
+                  filter_by_non_overlaps_directed( # Removes the parts that overlap with the - strand exons
+                      x_flat |> filter(sign == -1)
+                      )|>
+                  mutate(SE = TRUE)
+
+neg_ranges <- x_flat |>
+  filter(sign == -1) |>
+  as_tibble() |>
+  group_by(gene) |>
+  summarise(
+    neg_start = min(start),
+    neg_end = max(end),
+    .groups = "drop"
+  )
+
+downreg_exons<- downreg_exons |> 
+    filter(
+        start >= neg_ranges$neg_start[match(gene, neg_ranges$gene)] &
+        end <= neg_ranges$neg_end[match(gene, neg_ranges$gene)]
+    )
+
+
+downreg_exons |>
+     group_by(gene) |>
+     summarise(n = n()) |>
+     as_tibble()
+
+
+length(downreg_exons) # n of spliced exons 
+length(unique(downreg_exons$gene)) # n of dif genes
+unique(downreg_exons$sign) # all should be + 
+
+
+# get all the exons not in downreg_exons
+non_spliced_exons <- x_flat |>
+  filter(!(aux_id %in% downreg_exons$aux_id)) 
+
+
+#keep only the nearest exon for nonreg_exons 
+nonreg_auxid <-pair_nearest(downreg_exons, non_spliced_exons)$aux_id.y #only 22 unique -- many SE exons have the same nearest
+nonreg_exons <- x_flat |> filter(aux_id %in% nonreg_auxid)
+length(nonreg_exons) # n of  exons 
+length(unique(nonreg_exons$gene)) # n of dif genes
+unique(nonreg_exons$sign) 
+
+## many SE are sequential... REVISE  !!
+downreg_exons$aux_id
+```
+
+```{r}
+library(plyranges)
+library(dplyr)
+
+detect_downreg_exons <- function(x_flat) {
+  x_flat <- flat_sig_exons
+  # 1) split + vs – strand
+  plus_exons  <- x_flat %>% filter(sign ==  1)
+  minus_exons <- x_flat %>% filter(sign ==  -1)
+
+  candidates <- plus_exons %>%
+    filter_by_non_overlaps_directed(minus_exons) %>%
+    mutate(SE = TRUE) 
+  
+  prev_idx <- precede(candidates, plus_exons) #includes NA
+  prev_aux <- plus_exons$exon_id[prev_idx]
+  
+  next_idx <- follow(candidates, plus_exons)
+  next_aux <- plus_exons$exon_id[next_idx]
+  
+  candidates$prev_aux_id <- prev_aux
+  candidates$next_aux_id <- next_aux
+  # 3) only keep if both flanking IDs appear in minus_df
+  candidates %>%
+    filter(prev_aux_id %in% minus_exons$exon_id,
+           next_aux_id %in% minus_exons$exon_id,
+           internal ==TRUE)
+
+}
+
+
+detect_downreg_exonsv2 <- function(x_flat) {
+  # x_flat <- flat_sig_exons
+  x_flat <- x_flat |>
+    mutate(key = paste0(isoform, "-", exon_rank))
+  # 1) split + vs – strand
+  plus_exons  <- x_flat %>% filter(sign ==  1)
+  neg_exons <- x_flat %>% filter(sign ==  -1)
+
+  candidates <- plus_exons %>%
+    filter_by_non_overlaps_directed(neg_exons) %>%
+    mutate(SE = TRUE) |>
+    filter(internal == TRUE)
+  
+  left_keys <- paste0(candidates$isoform, "-", candidates$exon_rank-1)
+  left_exons <- x_flat |>
+      filter(key %in% left_keys)
+
+  right_keys <- paste0(candidates$isoform, "-", candidates$exon_rank+1)
+  right_exons <- x_flat |>
+      filter(key %in% right_keys)
+  
+  candidates <-  candidates |>
+          mutate(left_and_right =
+               left_exons %in% neg_exons &
+               right_exons %in% neg_exons
+               )
+  downreg_exons  <- candidates |> filter(left_and_right == TRUE)
+
+
+}
+
+g1 <- detect_downreg_exons(flat_sig_exons) |> unique()
+g2<- detect_downreg_exonsv2(flat_sig_exons) |> unique()
+
+downreg_exons<- detect_downreg_exonsv2(flat_sig_exons) |> unique()
+flat_sig_exons <- flat_sig_exons |>
+    mutate(key = paste0(isoform, "-", exon_rank))
+
+# a) exactly the same coordinates in both
+common   <- intersect(g1, g2, ignore.strand=FALSE)
+
+# b) in g1 but not in g2
+only_g1  <- setdiff(g1, g2, ignore.strand=FALSE)
+
+# c) in g2 but not in g1
+only_g2  <- setdiff(g2, g1, ignore.strand=FALSE)
+
+downreg_exons |>
+     group_by(gene) |>
+     summarise(n = n()) |>
+     as_tibble() 
+
+
+length(downreg_exons) # n of spliced exons 
+length(unique(downreg_exons$gene)) # n of dif genes
+unique(downreg_exons$sign) # all should be + 
+
+
+right_keys <- paste0(downreg_exons$isoform, "-", downreg_exons$exon_rank+1)
+nonreg_exons <- flat_sig_exons |>
+    filter(key %in% right_keys)
+  
+
+
+# get all the exons not in downreg_exons
+non_spliced_exons <- flat_sig_exons |>
+  filter(!(exon_id %in% downreg_exons$exon_id)) 
+
+
+#keep only the nearest exon for nonreg_exons 
+nonreg_auxid <-pair_nearest(downreg_exons, non_spliced_exons)$exon_id.y #only 22 unique -- many SE exons have the same nearest
+nonreg_exons <- flat_sig_exons |> filter(exon_id %in% nonreg_auxid) |> unique()
+length(nonreg_exons) # n of  exons 
+length(unique(nonreg_exons$gene)) # n of dif genes
+unique(nonreg_exons$sign) 
 
 
 ```
 
-## Filter our non-internal selected skipped exons and select non-skipped neighbors
+# Explore SE exons
 
 ```{r}
-x_flat_internal <- x_flat |> filter(internal ==TRUE)
+plot_downreg_exons <- function(gene_of_interest){
 
-# take the flattened `+` exons and remove the flatted `-` exons --> result is exons spliced by PTBP1
-spliced_exons <- x_flat_internal |>
-                  filter(sign == 1) |> # Selects only the flattened + strand exons
-                  filter_by_non_overlaps_directed( # Removes the parts that overlap with the - strand exons
-                      x_flat_internal |> filter(sign == -1)
-                      ) |>
-                  mutate(SE = TRUE)
+#tx from the gene present in the se
+present_tx <-  names(se)[ rowData(se)$gene_id ==gene_of_interest ]
+# get the sig tx 
+sig_tx <- sig_res |> filter(gene_id== gene_of_interest) |> select(isoform_id)
+  
+exons_toshow <-  exons[sig_tx$isoform_id]
 
-length(spliced_exons) # n of spliced exons 
-length(unique(spliced_exons$gene)) # n of dif genes
-unique(spliced_exons$sign) # all should be + 
+# make a named vector of signs
+signs <- setNames(sig_res$sign, sig_res$isoform_id)
+# pull out the signs in the same order as our GRangesList names
+the_signs <- signs[names(exons_toshow)]
+# build the new names
+new_names <- ifelse(
+  !is.na(the_signs) & the_signs == 1,
+  paste0("+", names(exons_toshow)),
+  paste0("-", names(exons_toshow))
+)
+# assign back
+names(exons_toshow) <- new_names
+
+exons_toshow[["downreg"]] <- downreg_exons |> filter(gene == gene_of_interest)
+
+#wiggleplotr::plotTranscripts(exons[present_tx], rescale_introns = TRUE)
+
+wiggleplotr::plotTranscripts(exons_toshow, rescale_introns = TRUE)
+
+#sig_res |> filter(gene_id== gene_of_interest)
+
+}
+# p <- plot_downreg_exons(gene_of_in
+```
+
+```{r}
+library(dplyr)
+library(scales)  # for col_numeric()
+
+# palete
+library(scales)
+library(dplyr)
 
 
-non_spliced_exons <- x_flat_internal |>
-  filter(!(aux_id %in% skipped_exons$aux_id)) 
+# palete
+# Define palette for negative values: from red (-1) to gray (0)
+pal_neg <- col_numeric(
+  palette = c("#FF2900", "#ffd4cc", "#E0E0E0"),  # red -> dim red -> gray
+  domain = c(-1, 0.8)
+)
+
+# Define palette for positive values: from gray (0) to blue (1)
+pal_pos <- col_numeric(
+  palette = c("#E0E0E0", "#cae3ff", "#4FA4FF"),  # gray -> dim blue -> blue
+  domain = c(0.8, 1)
+)
+
+# Custom function that applies the appropriate palette based on the score
+custom_pal <- function(x) {
+  sapply(x, function(val) {
+    if (val < 0) {
+      pal_neg(val)
+    } else {
+      pal_pos(val)
+    }
+  })
+}
 
 
-#keep only the nearest exon
-non_SE_auxid <-pair_nearest(skipped_exons, non_spliced_exons)$aux_id.y #only 22 unique -- many SE exons have the same nearest
-non_spliced_exons <- x_flat_internal |> filter(aux_id %in% non_SE_auxid)
-length(non_spliced_exons) # n of  exons 
-length(unique(non_spliced_exons$gene)) # n of dif genes
-unique(non_spliced_exons$sign) 
+# Assuming you already have pal_neg, pal_pos, custom_pal defined
 
-## many SE are sequential... REVISE  !!
-skipped_exons$aux_id
+sig_res <- sig_res %>%
+  mutate(
+    score = (1 - empirical_pval) * sign(estimates),  # Compute the score
+    computed_color = custom_pal(score)               # Apply your custom palette
+  )
+
+```
+
+```{r}
+# setwd("/work/users/b/e/beacm/wiggleplotr")
+# devtools::load_all()
+
+library(dplyr)
+
+plot_downreg_exons <- function(gene_of_interest){
+  
+    
+    
+  #tx from the gene present in the se
+  present_tx <-  names(se)[ rowData(se)$gene_id ==gene_of_interest ]
+  # get the sig tx 
+  sig_tx <- sig_res |> filter(gene_id== gene_of_interest) |> select(isoform_id)
+    
+  exons_toshow <-  exons[sig_tx$isoform_id]
+  
+  # make a named vector of signs
+  signs <- setNames(sig_res$sign, sig_res$isoform_id)
+  # pull out the signs in the same order as our GRangesList names
+  the_signs <- signs[names(exons_toshow)]
+  # build the new names
+  new_names <- ifelse(
+    !is.na(the_signs) & the_signs == 1,
+    paste0("+", names(exons_toshow)),
+    paste0("-", names(exons_toshow))
+  )
+  # assign back
+  names(exons_toshow) <- new_names
+  
+  exons_toshow[["downreg"]] <- downreg_exons |> filter(gene == gene_of_interest)
+  
+  transcript_annotations <- tibble(
+  transcript_id = names(exons_toshow),
+  strand = purrr::map_chr(exons_toshow, function(gr) {
+    strands <- as.character(strand(gr))
+    unique_strands <- unique(strands)
+    if (length(unique_strands) == 1) {
+      unique_strands
+    } else {
+      "*"
+    }
+  })
+)
+
+  transcript_annotations <- transcript_annotations %>%
+  mutate(
+    transcript_id_aux = sub("^[+-]", "", transcript_id)  # Clean for joining
+  )
+
+transcript_annotations <- transcript_annotations %>%
+  left_join(
+    sig_res %>% select(isoform_id, computed_color),
+    by = c("transcript_id_aux" = "isoform_id")
+  ) %>%
+  mutate(
+    color_by = ifelse(is.na(computed_color), "green", computed_color)
+  ) %>%
+  select(-computed_color)  # optional: remove helper column
+
+  wiggleplotr::plotTranscripts(exons_toshow, 
+                               transcript_annotations = transcript_annotations, 
+                               rescale_introns = TRUE)
+  
+  
+}
+
+
+# Now continue your analysis, everything will use the local version
+
+```
+
+```{r}
+pdf("all_downreg_exonsv22_fdr05_colors.pdf", width = 6, height = 4)
+for (gene in unique(downreg_exons$gene)[1]) {
+  print(plot_downreg_exons(gene))
+}
+dev.off()
+
+```
+
+```{r}
+
+plot_tx <- function(gene_of_interest)
+  {
+  #tx from the gene present in the se
+  present_tx <-  names(se)[ rowData(se)$gene_id ==gene_of_interest ]
+  # get the sig tx 
+  sig_tx <- sig_res |> filter(gene_id== gene_of_interest) |> select(isoform_id)
+  
+  
+  
+  # Extract genomic coordinates for the gene
+  gene_coords <- genes(txdb, filter = list(GENEID = gene_of_interest))
+  transcripts <- transcripts(txdb, filter = list(GENEID = gene_of_interest))
+  
+  # filter to keep only the transcripts in the experiment
+  assay_transcripts <-  present_tx
+  
+  # Extract chromosome, start, and end positions of the gene
+  gene_chrom <- as.character(seqnames(gene_coords))
+  gene_start <- min(start(gene_coords))
+  gene_end <- max(end(gene_coords))
+  
+  # Define plotting parameters
+  par <- pgParams(
+    chrom = gene_chrom, 
+    chromstart = gene_start, chromend = gene_end,
+    assembly = db_assembly, just = c("left", "bottom")
+  )
+
+  
+  # Dynamically adjust plot dimensions based on transcript count
+  plotT_height <- round(length(assay_transcripts) / 3, 3)  # Height scales with transcript count
+  page_height <- plotT_height + 1  
+  page_width <- 5 
+  # output_file <-file.path(wd, "app/www/temp.png")
+  # Save the plot as a PNG file
+  # png(output_file, width = page_width * 200, height = page_height * 200, res = 170)
+  
+  # Create a new plotting page
+  pageCreate(
+    width = page_width + 1, height = page_height, 
+    default.units = "inches", showGuides = FALSE
+  )  
+  
+  # Plot transcripts with dynamic height 
+  plotgardener::plotTranscripts(
+    params = par, 
+    x = 0.5, y = 0, width = page_width, height = plotT_height, 
+    just = c("left", "top"), default.units = "inches",
+    # transcriptHighlights = hilite,
+    # transcriptFilter = assay_transcripts,
+    limitLabel = FALSE,
+    fontsize = 9,
+    labels = "transcript"
+  )
+  
+  # Add genome coordinate labels to the plot
+  plotGenomeLabel(
+    chrom = gene_chrom, 
+    chromstart = gene_start, chromend = gene_end,
+    x = 0.5, y = page_height - 0.5,  
+    just = c("left", "top"),
+    length = page_width
+  ) 
+  
+  # dev.off() 
+}
+
+# Identify the gene of interest by its geneid given its symbol (selectizeInput)
+#gene_of_interest <- "ENSG00000004455.16"
+#plot_tx(gene_of_interest)
 ```
 
 # Get upstream seq from all exons
@@ -163,12 +641,12 @@ skipped_exons$aux_id
 library(plyranges)
 width_upstream <- 100
 
-upstr_spliced_exons <- spliced_exons %>%
+upstr_downreg_exons <- downreg_exons %>%
         flank_upstream(width = width_upstream) 
 # The result will be another GRanges object that still contains 158 ranges,
 # but each range now represents the upstream flanking region of the corresponding exon. 
 
-upstr_non_spliced_exons <- non_spliced_exons %>%
+upstr_nonreg_exons <- nonreg_exons %>%
         flank_upstream(width = width_upstream) 
 # The result will be another GRanges object that still contains 158 ranges,
 # but each range now represents the upstream flanking region of the corresponding exon. 
@@ -179,105 +657,136 @@ library(Biostrings)
 library(BSgenome)
 library(BSgenome.Hsapiens.UCSC.hg38)
 
-seq_spliced_exons <-  Hsapiens |>  ## RNAStringSet object of length 150:
-                       getSeq(upstr_spliced_exons) |>
+seq_downreg_exons <-  Hsapiens |>  ## RNAStringSet object of length 150:
+                       getSeq(upstr_downreg_exons) |>
                        RNAStringSet() 
-metadata(seq_spliced_exons)$aux_id <- upstr_spliced_exons$aux_id
+metadata(seq_downreg_exons)$aux_id <- upstr_downreg_exons$aux_id
 
 
-seq_non_spliced_exons <-  Hsapiens |>  ## RNAStringSet object of length 150:
-                       getSeq(upstr_non_spliced_exons) |>
+seq_nonreg_exons <-  Hsapiens |>  ## RNAStringSet object of length 150:
+                       getSeq(upstr_nonreg_exons) |>
                        RNAStringSet()
 
-metadata(seq_non_spliced_exons)$aux_id <- upstr_non_spliced_exons$aux_id
+metadata(seq_nonreg_exons)$aux_id <- upstr_nonreg_exons$aux_id
 ```
 
 ## Create features for ML from the exons upstream sequences
 
 ```{r}
-source(here::here("aux_postDTU.R"))
 
-dim(get_windows(upstr_spliced_exons))
-dim(get_windows(upstr_non_spliced_exons))
 
-dim(get_sliding_windows(upstr_spliced_exons))
-dim(get_sliding_windows(upstr_non_spliced_exons))
+dim(get_windows(upstr_downreg_exons))
+dim(get_windows(upstr_nonreg_exons))
 
-spliced_exons_df <- create_exon_df(seq_spliced_exons, 
-                                   upstr_spliced_exons,
+dim(get_sliding_windows(upstr_downreg_exons))
+dim(get_sliding_windows(upstr_nonreg_exons))
+
+downreg_exons_df <- create_exon_df(seq_downreg_exons, 
+                                   upstr_downreg_exons,
                                    1)
-dim(spliced_exons_df)
+dim(downreg_exons_df)
 
-non_spliced_exons_df <- create_exon_df(seq_non_spliced_exons, 
-                                       upstr_non_spliced_exons,
+nonreg_exons_df <- create_exon_df(seq_nonreg_exons, 
+                                       upstr_nonreg_exons,
                                        0)
-dim(non_spliced_exons_df)
+dim(nonreg_exons_df)
 
-total_df <- dplyr::bind_rows(spliced_exons_df, non_spliced_exons_df) #features df for ML with both SE and non SE exons label 1/0
+total_df <- dplyr::bind_rows(downreg_exons_df, nonreg_exons_df) #features df for ML with both SE and non SE exons label 1/0
 dim(total_df)
 
 ## sabe df into file to use it in python for ML 
-write.csv(total_df, "exon_features_v2.csv", row.names = FALSE)
+write.csv(total_df, "exon_features_fdr05_v2.csv", row.names = FALSE)
 ```
 
 Plots
 
 ```{r}
 
-bp_percent <-  get_bp_percent(seq_spliced_exons)
+bp_percent <-  get_bp_percent(seq_downreg_exons)
 barplot_bppercent(bp_percent)
 
-dibp_percent <-  get_dibp_features(seq_spliced_exons)
+dibp_percent <-  get_dibp_features(seq_downreg_exons)
 barplot_bppercent(dibp_percent)
 
 
-tribp_percent <-  get_tribp_features(seq_spliced_exons)
+tribp_percent <-  get_tribp_features(seq_downreg_exons)
 barplot_bppercent(tribp_percent)
 
 
-bp_percent <-  get_bp_percent(seq_non_spliced_exons)
+bp_percent <-  get_bp_percent(seq_nonreg_exons)
 barplot_bppercent(bp_percent)
 
-dibp_percent <-  get_dibp_features(seq_non_spliced_exons)
+dibp_percent <-  get_dibp_features(seq_nonreg_exons)
 barplot_bppercent(dibp_percent)
 
 
-tribp_percent <-  get_tribp_features(seq_non_spliced_exons)
+tribp_percent <-  get_tribp_features(seq_nonreg_exons)
 barplot_bppercent(tribp_percent)
 
 ```
 
 ```{r}
 # % of bp
-se_percent <-  get_bp_percent(seq_spliced_exons)
-non_se_percent <-  get_bp_percent(seq_non_spliced_exons)
+se_percent <-  get_bp_percent(seq_downreg_exons)
+non_se_percent <-  get_bp_percent(seq_nonreg_exons)
 barplot_bppercent2(se_percent, non_se_percent)
 
 # % of pairs
-se_percent <-  get_dibp_features(seq_spliced_exons)
-non_se_percent <-  get_dibp_features(seq_non_spliced_exons)
+se_percent <-  get_dibp_features(seq_downreg_exons)
+non_se_percent <-  get_dibp_features(seq_nonreg_exons)
 barplot_bppercent2(se_percent, non_se_percent)
 
 # % of triplets
-se_percent <-  get_tribp_features(seq_spliced_exons)
-non_se_percent <-  get_tribp_features(seq_non_spliced_exons)
+se_percent <-  get_tribp_features(seq_downreg_exons)
+non_se_percent <-  get_tribp_features(seq_nonreg_exons)
 barplot_bppercent2(se_percent, non_se_percent)
 ```
 
 ```{r}
-#windoes is #exons x #windows*4 (not summarized by window yet)
-spliced_exons_windows <- get_sliding_windows(upstr_spliced_exons,#slid windows
-                                          window_width = 10,
-                                          width_upstream = width_upstream, ## maches flankupsteam 
-                                          overlap = 5
-                                      )
-nonspliced_exons_windows <- get_sliding_windows(upstr_non_spliced_exons,#slid windows
-                                          window_width = 10,
-                                          width_upstream = width_upstream, ## maches flankupsteam 
-                                          overlap = 5
-                                      )
-plot_exon_summary(spliced_exons_windows, 
-                  nonspliced_exons_windows,
-                  nucleotide = "G")
+#windoes is #exons x #windows*4 (not summarized by window yet) # 
+downreg_exons_windows <- get_sliding_windows(upstr_downreg_exons,#slid windows # 
+                                             window_width = 10, # 
+                                             width_upstream = width_upstream, ## maches flankupsteam # 
+                                             overlap = 5) 
+
+nonreg_exons_windows <- get_sliding_windows(upstr_nonreg_exons,#slid windows 
+                                            window_width = 10, 
+                                            width_upstream = width_upstream, ## maches flankupsteam 
+                                            overlap = 5 ) 
+
+plot_exon_summary(downreg_exons_windows, nonreg_exons_windows, nucleotide = "A")
+
+```
+
+```{r}
+library(patchwork)
+nucs <- c("G","A","U","C")
+
+plots <- lapply(nucs, function(nt) {
+  plot_exon_summary(downreg_exons_windows, nonreg_exons_windows, nucleotide = nt) +
+    ggtitle(nt)
+})
+
+# 3) Combine and enforce common y‐axis --------------------------------------
+combined <- wrap_plots(plots, ncol = 4) & 
+    coord_cartesian(ylim  = c(0,0.5)) & 
+    theme(legend.position = "bottom")
+
+combined
+
+```
+
+```{r}
+
+
+downreg_exons_wind_downstream <- get_downstream_from_GRanges(downreg_exons)
+plot_window_compare(downreg_exons_windows, downreg_exons_wind_downstream,
+                    exon_label="downreg exon")
+
+
+
+nonreg_exons_wind_downstream <- get_downstream_from_GRanges(nonreg_exons)
+plot_window_compare(nonreg_exons_windows, nonreg_exons_wind_downstream,
+                    exon_label="nonreg exon")
 
 ```

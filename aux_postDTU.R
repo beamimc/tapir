@@ -10,6 +10,35 @@ library(dplyr)
 library(reshape2)
 library(plotly)
 
+# Core Libraries ---------------------------------------------------------------
+library(shiny)                 # Web application framework
+library(ggplot2)               # Plotting
+library(grid)                  # Grid-based graphics
+library(dplyr)                 # Data manipulation
+library(here)                  # Project root management
+library(scales)                # Scale functions
+library(stringr)
+
+# Genomics & Annotation --------------------------------------------------------
+library(SummarizedExperiment)  # Genomic data structures
+library(GenomicFeatures)       # Process genomic features
+library(GenomicRanges)         # Manipulate genomic ranges
+library(org.Hs.eg.db)          # Human gene annotation
+library(biomaRt)               # Query Ensembl data
+
+library(Biostrings)
+library(BSgenome)
+library(BSgenome.Hsapiens.UCSC.hg38)
+
+
+# Plotting & Visualization -----------------------------------------------------
+library(plotgardener)          # Genomic plotting
+library(wiggleplotr)           # Wiggle plot visualization
+library(plyranges)             # Tidy-style genomic range manipulation
+library(reshape2)              # Data reshaping
+library(viridis)               # Color palettes
+library(RColorBrewer)          # Color palettes
+
 #######################################################
 # get_bp_count: Get Nucleotide Counts
 #######################################################
@@ -134,19 +163,22 @@ get_sliding_windows <- function(upstr_ranges, # input is GRanges object
   
   windows <- upstr_ranges |> slide_ranges( width = window_width,  # GRanges
                                            step = step) # divide into windows
-  seq_windows <-  Hsapiens |>  
-    getSeq(windows) |> 
+  seq_windows <-  Hsapiens |>
+    getSeq(windows) |>
     RNAStringSet()  # RNAStringSet
   # The RNAStringSet result has n_windows * (# of exons) rows.
   windows_bp <- get_bp_percent(seq_windows) # calculate %bp for all windows
-  
-  windows_meta <- as.data.frame(windows)[, c("strand", "partition")]
-  
-  # Combine the matrix and the metadata by column-binding
-  combined <- cbind(windows_bp, windows_meta)
-  
-  windows_df <- as.data.frame(combined)
-  
+
+  # windows_meta <- as.data.frame(windows)[, c("strand", "partition")]
+  # 
+  # # Combine the matrix and the metadata by column-binding
+  # combined <- cbind(windows_bp, windows_meta)
+  # 
+  # windows_df <- as.data.frame(combined)
+  tb <- as_tibble(windows)            # seqnames, start, end, strand, partition, etc.
+  windows_meta <- tb[, c("strand","partition")]
+  combined     <- cbind(windows_bp, windows_meta)
+  windows_df   <- as.data.frame(combined)
   # Group by partition (and strand, if desired) and create a new column "window_label"
   windows_df <- windows_df %>%
     group_by(partition, strand) %>% 
@@ -364,8 +396,8 @@ barplot_bppercent2 <- function(mat1, mat2,
 plot_exon_summary <- function(spliced_exons_windows, 
                               nonspliced_exons_windows = NULL, 
                               nucleotide = "U",
-                              custom_colors = c("Spliced" = "#F84040", 
-                                                "Non-Spliced" = "skyblue"),
+                              custom_colors = c("Downregulated" = "#F84040", 
+                                                "Non-Regulated" = "skyblue"),
                               size = 100, 
                               step = 5)
 {
@@ -381,7 +413,7 @@ plot_exon_summary <- function(spliced_exons_windows,
   
   # Convert spliced matrix to long format and label dataset as "Spliced"
   df_spliced <- melt(sub_matrix_spliced, varnames = c("Row", "Window"), value.name = "Value")
-  df_spliced$Dataset <- "Spliced"
+  df_spliced$Dataset <- "Downregulated"
   
   # -------------------------------
   # Process the nonspliced_exons_windows data (if provided)
@@ -396,7 +428,7 @@ plot_exon_summary <- function(spliced_exons_windows,
     
     # Convert nonspliced matrix to long format and label dataset as "Non-Spliced"
     df_nonspliced <- melt(sub_matrix_nonspliced, varnames = c("Row", "Window"), value.name = "Value")
-    df_nonspliced$Dataset <- "Non-Spliced"
+    df_nonspliced$Dataset <- "Non-Regulated"
     
     # Combine both datasets
     long_df <- rbind(df_spliced, df_nonspliced)
@@ -436,4 +468,119 @@ plot_exon_summary <- function(spliced_exons_windows,
   
   # Optionally, return the long data frame for inspection
   invisible(long_df)
+  return(p)
 }
+
+
+get_downstream_from_GRanges <- function(GRanges,
+                            width_upstream=100
+                ){
+  
+  upstr_exons <- GRanges %>%
+    flank_downstream(width = width_upstream) 
+  # The result will be another GRanges object that still contains 158 ranges,
+  # but each range now represents the upstream flanking region of the corresponding exon. 
+  
+  df <- get_sliding_windows(upstr_exons)
+  
+  return(df)
+}
+
+
+plot_window_compare <- function(df1, df2,
+                                size      = 100,
+                                step      = 5,
+                                gap       = 8,
+                                rect_fill = "grey70",
+                                line_size = 1,
+                                palette   = c(A="#F84040", 
+                                              C="skyblue", 
+                                              G="#FFB400", 
+                                              U="#06D6A0"),
+                                exon_label = "exon") {
+  # reshape to long form, keeping a replicate ID
+  longify <- function(df, set_label) {
+    as.data.frame(df) %>%
+      tibble::rownames_to_column("replicate") %>%
+      pivot_longer(
+        cols = -replicate,
+        names_to  = c("window", "nt"),
+        names_sep = "_",
+        values_to = "value"
+      ) %>%
+      mutate(set = set_label)
+  }
+  
+  l1   <- longify(df1, "upstream")
+  l2   <- longify(df2, "downstream")
+  nwin <- length(unique(l1$window))   # e.g. 8
+  xmin <- nwin + 0.5
+  xmax <- nwin + gap + 0.5
+  ymin <- 0.2
+  ymax <- 0.4
+  
+  # assign numeric x positions
+  l1 <- l1 %>%
+    mutate(x = as.numeric(sub("w","", window)))
+  l2 <- l2 %>%
+    mutate(x = as.numeric(sub("w","", window)) + nwin + gap)
+  
+  combined <- bind_rows(l1, l2)
+  
+  # compute breaks and labels
+  window_number <- 1:nwin
+  # x positions
+  xpos1 <- window_number
+  xpos2 <- window_number + nwin + gap
+  # labels
+  labs1 <- -size + (window_number ) * step
+  labs2 <-          (window_number ) * step
+  
+  all_breaks <- c(xpos1, xpos2)
+  all_labels <- c(labs1, labs2)
+  
+  # now plot
+  ggplot(combined,
+         aes(x        = x,
+             y        = value,
+             color    = nt,
+             linetype = set,
+             group    = interaction(set, nt))) +
+    # gap rectangle
+    annotate("rect",
+             xmin = xmin, xmax = xmax,
+             ymin = ymin, ymax = ymax,
+             fill = rect_fill) +
+    # add text centered in that rectangle
+    annotate("text",
+             x     = (xmin + xmax)/2,
+             y     = (ymin + ymax)/2,
+             label = exon_label,
+             size  = 3,        # text size
+             color = "black",  # choose contrasting color
+             fontface = "bold"
+    ) +
+    # mean lines
+    stat_summary(fun      = mean,
+                 geom     = "line",
+                 size     = line_size) +
+    # error bars
+    stat_summary(fun.data = mean_se,
+                 geom     = "errorbar",
+                 width    = 0.2) +
+    scale_color_manual(values = palette) +
+    scale_linetype_manual(values = c(upstream="solid",
+                                     downstream="solid"),
+                          guide = FALSE) +
+    scale_x_continuous(breaks = all_breaks,
+                       labels = all_labels) +
+    scale_y_continuous(limits = c(0,0.7), expand = c(0,0)) +
+    theme_classic() +
+    labs(x = "Relative location (bp)",
+         y = "Nucleotide percentage (%)",
+         color    = "Nucleotide") +
+    theme(legend.position = "top",
+          axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+  
+}
+
