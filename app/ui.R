@@ -4,10 +4,9 @@ library(plotly)
 library(bslib)
 
 ui <- page_sidebar(
-  title   = "Isoform Analysis",      # appears in the top navbar
+  title   = "Isoform Analysis",      
   theme   = bs_theme(version = 5, bootswatch = "flatly"),   # Bootstrap 5
   
-  # ─── Your off-canvas sidebar panel ─────────────────────────────────────────
   sidebar = sidebarPanel(
     width = 12,    
     selectizeInput(
@@ -25,7 +24,7 @@ ui <- page_sidebar(
     # actionButton("delete_view", "Delete")
   ),
   
-  # ─── Main body: tabset of your modules ──────────────────────────────────────
+  
   tabsetPanel(
     id = "main_tabs",
     tabPanel("DTU Exploration",   value = "dtu",     isoformAnalysisUI("isoform")),
