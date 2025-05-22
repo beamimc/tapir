@@ -1,5 +1,6 @@
 library(org.Hs.eg.db)
 library(GO.db)
+library(purrr)
 
 
 ### extract the gene symbol from the DB
