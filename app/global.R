@@ -21,7 +21,10 @@ library(biomaRt)               # Query Ensembl data
 library(Biostrings)            # DNA/RNA/protein sequences
 library(BSgenome)              # Genome data handling
 library(BSgenome.Hsapiens.UCSC.hg38)  # Human genome (hg38)
-
+# ─── Packages ────────────────────────────────────────────────────────────────
+library(clusterProfiler)
+library(enrichplot)
+library(patchwork)   # for side-by-side layouts
 # Plotting & Visualization -----------------------------------------------------
 library(plotgardener)          # Genomic plotting
 library(wiggleplotr)           # Wiggle plot visualization
@@ -29,6 +32,8 @@ library(plyranges)             # Tidy-style genomic range manipulation
 library(reshape2)              # Data reshaping
 library(viridis)               # Color palettes
 library(RColorBrewer)          # Color palettes
+library(reactable)
+library(shinycssloaders)
 
 # Load Local Development Package -----------------------------------------------
 setwd("/work/users/b/e/beacm/wiggleplotr")
@@ -51,20 +56,34 @@ source(file.path(wd, "app/R/exon_detection.R"))
 # GLOBAL Variables, Palettes & Helper Functions --------------------------------
 # ------------------------------------------------------------------------------
 
-my_theme <- bs_theme(version = 5, bootswatch = "flatly")
+my_theme <- bs_theme(version = 5, bootswatch = "yeti")
+width_upstream <- 100
 
+# # Palette for negative values: from red (-1) to gray (0)
+# pal_neg <- col_numeric(
+#   palette = c("#FF2900", "#ffd4cc", "#E0E0E0"),
+#   domain = c(-1, .8)
+# )
+# 
+# # Palette for positive values: from gray (0) to blue (1)
+# pal_pos <- col_numeric(
+#   palette = c("#E0E0E0", "#cae3ff", "#4FA4FF"),
+#   domain = c(0.8, 1)
+# )
+# 
 
 # Palette for negative values: from red (-1) to gray (0)
 pal_neg <- col_numeric(
-  palette = c("#FF2900", "#ffd4cc", "#E0E0E0"),
+  palette = c("#FC6C85", "#E0E0E0"),
   domain = c(-1, .8)
 )
 
 # Palette for positive values: from gray (0) to blue (1)
 pal_pos <- col_numeric(
-  palette = c("#E0E0E0", "#cae3ff", "#4FA4FF"),
+  palette = c("#E0E0E0",  "#5DADEC"),
   domain = c(0.8, 1)
 )
+
 
 # Custom palette function that applies the appropriate palette based on value
 custom_pal <- function(x) {
@@ -97,7 +116,9 @@ get_sig_res <- function(fdr_threshold){
     dplyr::filter(empirical_FDR < fdr_threshold) |>
     dplyr::select(gene_id, isoform_id, symbol, estimates, empirical_pval, empirical_FDR) |>
     dplyr::arrange(empirical_pval)
-  
+
+  sig_res <-  sig_res %>%
+    dplyr::mutate(sign = sign(estimates))
   return(sig_res)
   
 }
@@ -148,10 +169,6 @@ get_x_flat <- function(sig_res){
   }))
   
   flat_sig_exons <- unlist(sig_exons)
-  
-  sig_res <-  sig_res %>%
-    dplyr::mutate(sign = sign(estimates))
-  
   
   #include coef +/- column from the DTU analysis saturn 
   flat_sig_exons$coef <- sig_res$estimates[match(names(flat_sig_exons), sig_res$isoform_id)]
