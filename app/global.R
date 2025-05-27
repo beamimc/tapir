@@ -1,24 +1,26 @@
-
-# Core Libraries ---------------------------------------------------------------
+# Core Libraries ----------------------------------------------------------------
 library(shiny)                 # Web application framework
 library(ggplot2)               # Plotting
 library(grid)                  # Grid-based graphics
 library(dplyr)                 # Data manipulation
 library(here)                  # Project root management
 library(scales)                # Scale functions
-library(stringr)
+library(stringr)               # String manipulation
+library(DT)                    # Interactive tables
+library(plotly)                # Interactive plotting
+library(bslib)                 # Bootstrap themes
+library(purrr)                 # Functional programming
 
 # Genomics & Annotation --------------------------------------------------------
 library(SummarizedExperiment)  # Genomic data structures
 library(GenomicFeatures)       # Process genomic features
 library(GenomicRanges)         # Manipulate genomic ranges
 library(org.Hs.eg.db)          # Human gene annotation
+library(GO.db)                 # Gene Ontology terms
 library(biomaRt)               # Query Ensembl data
-
-library(Biostrings)
-library(BSgenome)
-library(BSgenome.Hsapiens.UCSC.hg38)
-
+library(Biostrings)            # DNA/RNA/protein sequences
+library(BSgenome)              # Genome data handling
+library(BSgenome.Hsapiens.UCSC.hg38)  # Human genome (hg38)
 
 # Plotting & Visualization -----------------------------------------------------
 library(plotgardener)          # Genomic plotting
@@ -28,10 +30,11 @@ library(reshape2)              # Data reshaping
 library(viridis)               # Color palettes
 library(RColorBrewer)          # Color palettes
 
+# Load Local Development Package -----------------------------------------------
 setwd("/work/users/b/e/beacm/wiggleplotr")
 devtools::load_all()
 
-# Set Working Directory and Source Files -------------------------------------
+# Set Working Directory and Source Scripts -------------------------------------
 setwd(here::here())  
 wd <- getwd() 
 
@@ -43,10 +46,14 @@ source(file.path(wd, "app/R/isoformModules.R"))
 source(file.path(wd, "app/R/summaryModules.R"))
 source(file.path(wd, "app/R/aux_postDTU.R"))
 source(file.path(wd, "app/R/isoform_plots.R"))
-
+source(file.path(wd, "app/R/exon_detection.R"))
 
 # GLOBAL Variables, Palettes & Helper Functions --------------------------------
 # ------------------------------------------------------------------------------
+
+my_theme <- bs_theme(version = 5, bootswatch = "flatly")
+
+
 # Palette for negative values: from red (-1) to gray (0)
 pal_neg <- col_numeric(
   palette = c("#FF2900", "#ffd4cc", "#E0E0E0"),
@@ -74,19 +81,32 @@ custom_pal <- function(x) {
 # Load SummarizedExperiment Object ---------------------------------------------
 se <- readRDS(here::here("data", "glinos_saturn_dtu.rds"))
 
-# Load table Object with satuRn DTU Analysis 
-sig_res <- read.csv(here::here("data", "glinos_saturn_dtu.csv"), 
-                    stringsAsFactors = FALSE)|>
-            as_tibble()
+# # Load table Object with satuRn DTU Analysis 
+# sig_res <- read.csv(here::here("data", "glinos_saturn_dtu.csv"), 
+#                     stringsAsFactors = FALSE)|>
+#             as_tibble()
+
 # Load Transcript Database (TxDb) & Prepare for Annotation ---------------------
 txdb <- loadDb(here("data","flair_filter_transcripts.sqlite"))
 
 exons <- readRDS(here::here("data", "glinos_exons.rds"))
+get_sig_res <- function(fdr_threshold){
+  sig_res <- rowData(se)[["fitDTUResult_exp_vs_ctrl"]] |>
+    tibble::as_tibble() |>
+    dplyr::bind_cols(as.data.frame(rowData(se)[,1:4])) |>
+    dplyr::filter(empirical_FDR < fdr_threshold) |>
+    dplyr::select(gene_id, isoform_id, symbol, estimates, empirical_pval, empirical_FDR) |>
+    dplyr::arrange(empirical_pval)
+  
+  return(sig_res)
+  
+}
 
+sig_res <- get_sig_res(0.05) #default 0.05 fdr
 
-# Gene Symbols for UI
-gene_ids <- sort(unique(sig_res$symbol))
-symbol <- gene_ids[1]
+# # Gene Symbols for UI
+# gene_ids <- sort(unique(sig_res$symbol))
+# symbol <- gene_ids[1]
 
 
 #  Assembly for plotgardener
@@ -110,60 +130,63 @@ condition_colors <- setNames(colors[seq_along(unique_conditions)], unique_condit
 
 
 
-###### create x_flat
 
-sig_exons <- exons[names(exons) %in% sig_res$isoform_id] #get GRangesList only from the DTUs 61 - 35 genes
-#62 transcripts GRangesList - 1 duplicate `ENSG00000198467.13-305f0cb0` elements 22 and 24
-#remove duplicate 
-sig_exons <- sig_exons[-22]
-
-# set if exons and internal or boundary 
-sig_exons <- GRangesList(lapply(sig_exons, function(gr) {
-  if (length(gr) > 0) {
-    mcols(gr)$internal <- rep(TRUE, length(gr))
-    mcols(gr)$internal[1] <- FALSE
-    mcols(gr)$internal[length(gr)] <- FALSE
-  }
-  gr
-}))
-
-flat_sig_exons <- unlist(sig_exons)
-
-sig_res <-  sig_res %>%
-  dplyr::mutate(sign = sign(estimates))
-
-
-#include coef +/- column from the DTU analysis saturn 
-flat_sig_exons$coef <- sig_res$estimates[match(names(flat_sig_exons), sig_res$isoform_id)]
-flat_sig_exons$sign <- sig_res$sign[match(names(flat_sig_exons), sig_res$isoform_id)]
-
-#include gene name for each transcript name 
-flat_sig_exons$gene <- sig_res$gene_id[match(names(flat_sig_exons), sig_res$isoform_id)]
-flat_sig_exons$isoform <- names(flat_sig_exons)
-
-x_flat <- flat_sig_exons
-
-
-
-# Create a data frame to display Transcript, Gene Symbol, and P-value in the UI.
-significant_transcripts <- sig_res$isoform_id
-dtu_df <- data.frame(
-  Transcript = significant_transcripts,
-  Symbol = sig_res$symbol,
-  P_Value = format(
-    sig_res$empirical_pval,
-    scientific = TRUE,
-    digits     = 2     # one significant digit → “3e-03”
-  ),
-  stringsAsFactors = FALSE
-)
-
+get_x_flat <- function(sig_res){
+  sig_exons <- exons[names(exons) %in% sig_res$isoform_id] #get GRangesList only from the DTUs 61 - 35 genes
+  #62 transcripts GRangesList - 1 duplicate `ENSG00000198467.13-305f0cb0` elements 22 and 24
+  #remove duplicate 
+  sig_exons <- sig_exons[-22]
+  
+  # set if exons and internal or boundary 
+  sig_exons <- GRangesList(lapply(sig_exons, function(gr) {
+    if (length(gr) > 0) {
+      mcols(gr)$internal <- rep(TRUE, length(gr))
+      mcols(gr)$internal[1] <- FALSE
+      mcols(gr)$internal[length(gr)] <- FALSE
+    }
+    gr
+  }))
+  
+  flat_sig_exons <- unlist(sig_exons)
+  
+  sig_res <-  sig_res %>%
+    dplyr::mutate(sign = sign(estimates))
+  
+  
+  #include coef +/- column from the DTU analysis saturn 
+  flat_sig_exons$coef <- sig_res$estimates[match(names(flat_sig_exons), sig_res$isoform_id)]
+  flat_sig_exons$sign <- sig_res$sign[match(names(flat_sig_exons), sig_res$isoform_id)]
+  
+  #include gene name for each transcript name 
+  flat_sig_exons$gene <- sig_res$gene_id[match(names(flat_sig_exons), sig_res$isoform_id)]
+  flat_sig_exons$isoform <- names(flat_sig_exons)
+  
+  x_flat <- flat_sig_exons
+  return(x_flat)
+  
+}
+get_dtu_df <- function(sig_res){
+  # Create a data frame to display Transcript, Gene Symbol, and P-value in the UI.
+  significant_transcripts <- sig_res$isoform_id
+  dtu_df <- data.frame(
+    Transcript = significant_transcripts,
+    Symbol = sig_res$symbol,
+    P_Value = format(
+      sig_res$empirical_pval,
+      scientific = TRUE,
+      digits     = 2     # one significant digit → “3e-03”
+    ),
+    stringsAsFactors = FALSE
+  )
+  return(dtu_df)
+  
+}
 
 # Functions: Counts, DTU and p-values
 # ------------------------------------------------------------------------------
 
 # Calculate the proportion of counts per transcript for a given gene symbol
-calc_prop <- function(symbol) {
+calc_prop <- function(symbol, sig_res) {
   cts <- assay(se, "counts")[mcols(se)$symbol == symbol, ]
   prop <- t(cts) / colSums(cts)
   
@@ -176,7 +199,8 @@ calc_prop <- function(symbol) {
 }
 
 # Calculate mean differences for Differential Transcript Usage (DTU)
-calc_mean_diff_DTU <- function(gene_symbol, cd1 = "ctrl", cd2 = "exp") {
+calc_mean_diff_DTU <- function(gene_symbol, sig_res,
+                               cd1 = "ctrl", cd2 = "exp") {
   cts <- assay(se, "counts")[mcols(se)$symbol == gene_symbol, ]
   prop <- t(cts) / colSums(cts)
   
@@ -196,7 +220,8 @@ calc_mean_diff_DTU <- function(gene_symbol, cd1 = "ctrl", cd2 = "exp") {
 }
 
 # Extract p-values from the Saturn DTU analysis for a given gene symbol
-get_pvals <- function(gene_symbol, cd1 = "ctrl", cd2 = "exp") {
+get_pvals <- function(gene_symbol, sig_res, 
+                      cd1 = "ctrl", cd2 = "exp") {
   # Identify the column in rowData that contains DTU results
   saturn_col <- paste0("fitDTUResult_", cd2, "_vs_", cd1)
   

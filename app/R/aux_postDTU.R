@@ -442,6 +442,35 @@ plot_exon_summary <- function(spliced_exons_windows,
   return(p)
 }
 
+plot_window_comparison <- function(upstr_downreg_exons,
+                                   upstr_nonreg_exons,
+                                   width_upstream=100){
+  nucs <- c("G","A","U","C")
+  #windoes is #exons x #windows*4 (not summarized by window yet) # 
+  downreg_exons_windows <- get_sliding_windows(upstr_downreg_exons,#slid windows # 
+                                               window_width = 10, # 
+                                               width_upstream = width_upstream, ## maches flankupsteam # 
+                                               overlap = 5) 
+  
+  nonreg_exons_windows <- get_sliding_windows(upstr_nonreg_exons,#slid windows 
+                                              window_width = 10, 
+                                              width_upstream = width_upstream, ## maches flankupsteam 
+                                              overlap = 5 ) 
+  plots <- lapply(nucs, function(nt) {
+    plot_exon_summary(downreg_exons_windows, 
+                      nonreg_exons_windows, 
+                      nucleotide = nt) +
+      ggtitle(nt)
+  })
+  
+  # 3) Combine and enforce common y‐axis --------------------------------------
+  combined <- wrap_plots(plots, ncol = 4) & 
+    coord_cartesian(ylim  = c(0,0.5)) & 
+    theme(legend.position = "bottom")
+  
+  combined
+}
+
 
 get_downstream_from_GRanges <- function(GRanges,
                             width_upstream=100

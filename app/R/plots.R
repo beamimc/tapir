@@ -122,7 +122,7 @@ get_plot_data <- function(prop,
   
   # Subset only samples from the two selected conditions
   subset_indices <- colData(se)$condition %in% c(cd1, cd2)
-  prop_subset <- prop[subset_indices, ]
+  prop_subset <- prop[subset_indices, ,  drop = FALSE]
   condition_subset <- se$condition[subset_indices]
   
   # Convert to long format for ggplot
@@ -156,10 +156,25 @@ boxplot_count_comparison <- function(prop, cd1 = "ctrl", cd2 = "exp") {
     theme(axis.text.x = element_text(angle = 0))  # Rotate x-axis labels if needed
 }
 
+get_transcript_colors <- function(transcripts, palette_name = "Set2") {
+  transcripts <- sort(unique(transcripts))  # ensure consistent order
+  n_colors <- max(3, length(transcripts))
+  
+  # If Set2 runs out, fall back to hue palette
+  if (n_colors <= 8) {
+    palette <- RColorBrewer::brewer.pal(n = n_colors, name = palette_name)
+  } else {
+    palette <- scales::hue_pal()(n_colors)
+  }
+  
+  setNames(palette[seq_along(transcripts)], transcripts)
+}
+
+
 # Function: spaguetti plot for transcript comparion KD vs WT (change hardcode)
 # ---------------------------------------------------------------
 
-line_plot_txp_comparison  <- function(prop, cd1 = "ctrl", cd2 = "exp"){
+line_plot_txp_comparison  <- function(prop, txp_colors, cd1 = "ctrl", cd2 = "exp"){
   
   plot_data <- get_plot_data(prop)
   
@@ -172,8 +187,6 @@ line_plot_txp_comparison  <- function(prop, cd1 = "ctrl", cd2 = "exp"){
       se_proportion = sd_proportion / sqrt(n)  # Standard error
     ) 
   
-  # Filter the color palette to only include the selected conditions
-  # selected_colors <- condition_colors[c(cd1, cd2)]
   
   p <- ggplot(summary_data, aes(x = condition, y = mean_proportion,
                                 group = Transcript, color = Transcript)) +
@@ -182,13 +195,21 @@ line_plot_txp_comparison  <- function(prop, cd1 = "ctrl", cd2 = "exp"){
     geom_errorbar(aes(ymin = mean_proportion - se_proportion, 
                       ymax = mean_proportion + se_proportion), 
                   width = 0.2) +           # Error bars for each point
-    
+    scale_color_manual(values = txp_colors) +
     theme_classic() +
     labs(x = "Condition", y = "Proportion"
          # title = "Proportion of Transcripts by Condition"
          ) +
+    
     theme(axis.text.x = element_text(angle = 0))
-  ggplotly(p)
+  ggplotly(p)%>%
+    layout(legend = list(
+      orientation = "h",      # horizontal keys
+      x           = 0.5,      # centered horizontally
+      xanchor     = "center",
+      y           = 1.05,     # just above the plotting area
+      yanchor     = "bottom"
+    ))
   # %>% 
   #   layout(margin = list(t = 100))
 }
@@ -196,7 +217,7 @@ line_plot_txp_comparison  <- function(prop, cd1 = "ctrl", cd2 = "exp"){
 
 # Function: barplot of mean difs KD vs WT (change hardcode)
 # ---------------------------------------------------------------
-barplot_meandifs <- function(mean_diffs_DTU, pvals, cd1 = "ctrl", cd2 = "exp"){
+barplot_meandifs <- function(mean_diffs_DTU, pvals,txp_colors, cd1 = "ctrl", cd2 = "exp") {
   
   # Extract names
   names_mean_diffs <- names(mean_diffs_DTU)
@@ -204,39 +225,43 @@ barplot_meandifs <- function(mean_diffs_DTU, pvals, cd1 = "ctrl", cd2 = "exp"){
   
   # Ensure names are aligned properly
   common_transcripts <- intersect(names_mean_diffs, names_pvals)
-   
+  
   plot_df <- data.frame(
     Transcript = common_transcripts,
     MeanDiff = mean_diffs_DTU[common_transcripts],
     pval = pvals[common_transcripts],
     stringsAsFactors = FALSE
   )
-  
-  
-  # Define significance threshold
-  plot_df <- plot_df %>%
-    mutate(Significance = ifelse(pval < 0.05, "Significant", "Not Significant"))
+
   
   # Compute positions for text (above bars)
   plot_df <- plot_df %>%
-    mutate(y_position = MeanDiff + 0.01 * sign(MeanDiff))  # Adjust for visibility
-  # Create the bar plot with p-value annotations
-  p <- ggplot(plot_df, aes(x = reorder(Transcript, MeanDiff), y = MeanDiff, fill = Significance)) +
-    geom_bar(stat = "identity", position = position_dodge(), width = 0.7) + 
-    geom_hline(yintercept = 0, linetype = "dashed", color = "black") + # Reference line at 0
-    geom_text(aes(y = y_position, label = sprintf("p=%.0e", pval)), size = 3, vjust = -0.5) + # Add p-values
-    scale_fill_manual(values = c("Significant" = "red", "Not Significant" = "gray")) + # Color scheme
-    labs(x = "Transcript", 
-         y = "Mean Difference"
-         # title = paste("Mean Differences", cd1,"vs", cd2)
-         ) +
-    theme_classic() +
-    theme(axis.text.x = element_text(angle = 45))#, hjust = 1)) # Rotate x labels for readability
-  ggplotly(p)
-  # %>% 
-  #   layout(margin = list(t = 100))
+    mutate(
+      Significance = ifelse(pval < 0.05, "Significant", "Not Significant"),
+      y_position = MeanDiff + 0.01 * sign(MeanDiff)
+    )
   
+  # Plot
+  p <- ggplot(plot_df, aes(x = reorder(Transcript, MeanDiff), y = MeanDiff, fill = Transcript)) +
+    geom_bar(stat = "identity", width = 0.7) + 
+    geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+    geom_text(aes(y = y_position*1.2, label = sprintf("p=%.0e", pval)), size = 3, vjust = -1) +
+    scale_fill_manual(values = txp_colors) +  # ✅ fill not color
+    labs(x = "Transcript", y = "Mean Difference") +
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  ggplotly(p) %>%
+    layout(showlegend = FALSE)
+    # layout(legend = list(
+    #   orientation = "h",
+    #   x = 0.5,
+    #   xanchor = "center",
+    #   y = 1.05,
+    #   yanchor = "bottom"
+    # ))
 }
+
 
 
 plot_updownstream_windows <- function(df1, df2,
@@ -335,14 +360,8 @@ plot_updownstream_windows <- function(df1, df2,
           axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
   
 }
-# ─── Packages ────────────────────────────────────────────────────────────────
-library(clusterProfiler)
-library(org.Hs.eg.db)
-library(enrichplot)
-library(patchwork)   # for side-by-side layouts
-library(ggplot2)
 
-go_plot <- function(gene_symbol_list){
+go_plot2 <- function(gene_symbol_list){
   
   # ─── Helper to make an “empty” panel ────────────────────────────────────────
   blank_panel <- function(txt){
@@ -384,4 +403,42 @@ go_plot <- function(gene_symbol_list){
   
 }
 
+go_plot <- function(gene_symbol_list) {
+  # Helper: blank panel when no enriched terms
+  blank_panel <- function(txt) {
+    ggplot() +
+      annotate("text", x = .5, y = .5, label = txt, size = 6, hjust = .5) +
+      theme_void()
+  }
+  
+  # Run enrichGO + return barplot per ontology
+  plots <- lapply(c("BP", "MF", "CC"), function(ont) {
+    ego <- enrichGO(
+      gene          = gene_symbol_list,
+      OrgDb         = org.Hs.eg.db,
+      keyType       = "SYMBOL",
+      ont           = ont,
+      pvalueCutoff  = 0.05,
+      readable      = TRUE
+    )
+    print(head(ego@result))
+    
+    
+    if (is.null(ego) || nrow(ego@result) == 0) {
+      return(blank_panel(paste0(ont, " — no enriched terms")))
+    }
+    
+    return(
+      barplot(
+        ego,
+        showCategory = 10,
+        title        = ont,
+        font.size    = 10
+      )
+    )
+  })
+  
+  # Combine the 3 barplots side-by-side
+  wrap_plots(plots, ncol = 3)
+}
 

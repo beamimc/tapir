@@ -11,7 +11,7 @@ isoformAnalysisUI <- function(id) {
         column(
           width = 6,
           style = "height: 100%; overflow-y: auto;",
-          tags$h4("Significant DTU"),
+          tags$h4("Significant DTU transcripts"),
           DTOutput(ns("dtu_table"))
         ),
         # Gene description + GO (right)
@@ -41,7 +41,8 @@ isoformAnalysisUI <- function(id) {
         column(
           width = 6,
           tags$div(class = "card mb-3",
-                   tags$div(class = "card-header bg-primary text-white", "Isoform Structures"),
+                   tags$div(class = "card-header bg-primary text-white", 
+                            "Isoform Structures"),
                    tags$div(class = "card-body",
                             # imageOutput(ns("gene_plot"), width = "100%")
                             plotlyOutput(ns("isoform_plot"), width = "100%")
@@ -54,7 +55,7 @@ isoformAnalysisUI <- function(id) {
         column(
           width = 3,
           tags$div(class = "card mb-3",
-                   tags$div(class = "card-header bg-success text-white", "Mean Differences between Conditions"),
+                   tags$div(class = "card-header bg-primary text-white", "Mean Differences between Conditions"),
                    tags$div(class = "card-body",
                             plotlyOutput(ns("barplot"), width = "100%")
                    )
@@ -65,7 +66,7 @@ isoformAnalysisUI <- function(id) {
         column(
           width = 3,
           tags$div(class = "card mb-3",
-                   tags$div(class = "card-header bg-info text-white", "Transcript Proportions by Condition"),
+                   tags$div(class = "card-header bg-primary text-white", "Transcript Proportions by Condition"),
                    tags$div(class = "card-body",
                             plotlyOutput(ns("lineplot"), width = "100%")
                    )
@@ -79,7 +80,7 @@ isoformAnalysisUI <- function(id) {
 
 
 # Module server functions
-isoformAnalysisServer <- function(id, gene_ids, dtu_df) {
+isoformAnalysisServer <- function(id, gene_ids, dtu_df, sig_res) {
   moduleServer(id, function(input, output, session) {
 
     # no updateSelectizeInput needed
@@ -87,10 +88,10 @@ isoformAnalysisServer <- function(id, gene_ids, dtu_df) {
     selected_gene <- reactive({
       sel <- input$dtu_table_rows_selected
       if (!is.null(sel) && length(sel) == 1) {
-        dtu_df$Symbol[sel]
+        dtu_df()[["Symbol"]][sel]
       } else {
         # default to row 1 when nothing is selected
-        dtu_df$Symbol[1]
+        dtu_df()[["Symbol"]][1]
       }
     })
     
@@ -98,25 +99,25 @@ isoformAnalysisServer <- function(id, gene_ids, dtu_df) {
     # Reactive values
     mean_diffs_DTU <- reactive({
       req(selected_gene())
-      calc_mean_diff_DTU(selected_gene())
+      calc_mean_diff_DTU(selected_gene(), sig_res() )
     })
     
     prop <- reactive({
       req(selected_gene())
-      calc_prop(selected_gene())
+      calc_prop(selected_gene(), sig_res())
     })
     
     pvals <- reactive({
       req(selected_gene())
-      get_pvals(selected_gene())
+      get_pvals(selected_gene(), sig_res())
     })
     
-    plot_path <- reactive({
-      req(selected_gene())
-      temp_file <- "www/temp.png"
-      plot_gene_txs(selected_gene(), temp_file, mean_diffs_DTU(), pvals())
-      temp_file
-    })
+    # plot_path <- reactive({
+    #   req(selected_gene())
+    #   temp_file <- "www/temp.png"
+    #   plot_gene_txs(selected_gene(), temp_file, mean_diffs_DTU(), pvals())
+    #   temp_file
+    # })
     
     # Outputs
     output$gene_description <- renderText({
@@ -126,7 +127,7 @@ isoformAnalysisServer <- function(id, gene_ids, dtu_df) {
     })
     
     output$dtu_table <- renderDT({
-      datatable(dtu_df, selection = "single", options = list(pageLength = 5))
+      datatable(dtu_df(), selection = "single", options = list(pageLength = 5))
     })
     
     output$go_table <- renderDT({
@@ -136,7 +137,6 @@ isoformAnalysisServer <- function(id, gene_ids, dtu_df) {
     })
     
     output$go_plot <- renderPlot({
-      
       req(selected_gene())
       go_plot(c(selected_gene()))
       
@@ -149,17 +149,26 @@ isoformAnalysisServer <- function(id, gene_ids, dtu_df) {
     # 
     output$isoform_plot <- renderPlotly({
       req(selected_gene())
-      plot_isoforms_wiggle(selected_gene())
+
+      
+      plot_isoforms_wiggle(selected_gene(), sig_res())
     })
+    
+    # Example: before calling plotting functions
+    txp_colors <- reactive({
+      transcripts <- unique(c(colnames(prop()), names(mean_diffs_DTU())))
+      get_transcript_colors(transcripts)
+    })
+    
     
     output$barplot <- renderPlotly({
       req(mean_diffs_DTU(), pvals())
-      barplot_meandifs(mean_diffs_DTU(), pvals())
+      barplot_meandifs(mean_diffs_DTU(), pvals(), txp_colors())
     })
     
     output$lineplot <- renderPlotly({
       req(prop())
-      line_plot_txp_comparison(prop())
+      line_plot_txp_comparison(prop(), txp_colors())
     })
   })
 }

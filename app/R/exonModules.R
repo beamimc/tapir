@@ -3,104 +3,140 @@ exonLevelUI <- function(id) {
   ns <- NS(id)
   tagList(
     fluidRow(
-      column(6,
-             tags$h3("Significant DTU transcripts"),
-             DTOutput(ns("exon_gene_table"))
+      class = "border-bottom p-3",   
+      
+      column(width = 6,
+             tags$h4("Significant DTU transcripts"),
+             DTOutput(ns("dtu_table"))
       ),
-      column(6,
-             plotOutput(ns("window_summary_plot"))
-      )
+      column(width = 6,
+             tags$div(class = "card mb-3",
+                      tags$div(class = "card-header bg-primary text-white", 
+                               "Isoform Structures with selected exons"),
+                      tags$div(class = "card-body",
+                               plotlyOutput(ns("exon_level_plot"), width = "100%"))
+                      )
+              )
     ),
-    fluidRow(
-      column(6,
-             plotOutput(ns("exon_level_plot"))   # <-- new plotOutput
+    # Tabs for downstream windows and another plot
+    tabsetPanel(
+      id = ns("exon_tabs"),  # optional id
+      tabPanel(
+        "Window Plots",
+        fluidRow(
+          column(
+            width = 6,
+            tags$div(class = "card mb-3",
+                     tags$div(class = "card-header bg-primary text-white", 
+                              "Up and downstream sequences"),
+                     tags$div(class = "card-body",
+                              plotOutput(ns("window_summary_plot_down"), width = "100%"))
+            )
+          ),
+          column(
+            width = 6,
+            tags$div(class = "card mb-3",
+                     tags$div(class = "card-header bg-primary text-white", 
+                              "Up and downstream sequences"),
+                     tags$div(class = "card-body",
+                              plotOutput(ns("window_summary_plot_nonreg"), width = "100%"))
+            )
+          )
+        )
+      ),
+      tabPanel(
+        "Single Plot",
+        fluidRow(
+          class = "border-bottom p-3",   
+          column(
+            width = 12,
+            tags$div(class = "card mb-3",
+                     tags$div(class = "card-header bg-primary text-white", 
+                              "Alternative View"),
+                     tags$div(class = "card-body",
+                              plotOutput(ns("plot_window_comparison"), width = "100%"))
+            )
+          )
+        )
       )
     )
   )
 }
-detect_downreg_exonsv2 <- function(x_flat) {
-  # x_flat <- flat_sig_exons
-  x_flat <- x_flat |>
-    mutate(key = paste0(isoform, "-", exon_rank))
-  # 1) split + vs – strand
-  plus_exons  <- x_flat %>% filter(sign ==  1)
-  neg_exons <- x_flat %>% filter(sign ==  -1)
-  
-  candidates <- plus_exons %>%
-    filter_by_non_overlaps_directed(neg_exons) %>%
-    mutate(SE = TRUE) |>
-    filter(internal == TRUE)
-  
-  left_keys <- paste0(candidates$isoform, "-", candidates$exon_rank-1)
-  left_exons <- x_flat |>
-    filter(key %in% left_keys)
-  
-  right_keys <- paste0(candidates$isoform, "-", candidates$exon_rank+1)
-  right_exons <- x_flat |>
-    filter(key %in% right_keys)
-  
-  candidates <-  candidates |>
-    mutate(left_and_right =
-             left_exons %in% neg_exons &
-             right_exons %in% neg_exons
-    )
-  downreg_exons  <- candidates |> filter(left_and_right == TRUE)
-  
-  
-}
-
-get_downstream_from_GRanges <- function(GRanges,
-                                        width_upstream=100
-){
-  
-  upstr_exons <- GRanges %>%
-    flank_downstream(width = width_upstream) 
-  # The result will be another GRanges object that still contains 158 ranges,
-  # but each range now represents the upstream flanking region of the corresponding exon. 
-  
-  df <- get_sliding_windows(upstr_exons)
-  
-  return(df)
-}
-
-
-get_upstream_from_GRanges <- function(GRanges,
-                                        width_upstream=100
-){
-  
-  upstr_exons <- GRanges %>%
-    flank_upstream(width = width_upstream) 
-  # The result will be another GRanges object that still contains 158 ranges,
-  # but each range now represents the upstream flanking region of the corresponding exon. 
-  
-  df <- get_sliding_windows(upstr_exons)
-  
-  return(df)
-}
-
-
-exonLevelServer <- function(id, gene_data) {
+    
+    
+exonLevelServer <- function(id, dtu_df, x_flat, sig_res) {
   moduleServer(id, function(input, output, session) {
-    output$exon_gene_table <- renderDT({
-      datatable(gene_data, selection = "single", options = list(pageLength = 5))
-    })
-    
-    output$exon_level_plot <- renderPlot({
-      sel <- input$exon_gene_table_rows_selected
-      req(sel)
-      gene <- gene_data$Symbol[sel]
-      exon_level_plot(gene)
-    })
-    
 
-      downreg_exons <- detect_downreg_exonsv2(x_flat)
-      downreg_exons_wind_downstream <- get_downstream_from_GRanges(downreg_exons)
-      downreg_exons_wind_upstream <- get_upstream_from_GRanges(downreg_exons)
-      
-      output$window_summary_plot <- renderPlot({
-        plot_updownstream_windows(downreg_exons_wind_upstream, downreg_exons_wind_downstream,
-                            exon_label="downreg exon")
-        
+    
+    selected_gene <- reactive({
+      sel <- input$dtu_table_rows_selected
+      if (!is.null(sel) && length(sel) == 1) {
+        dtu_df()[["Symbol"]][sel]
+      } else {
+        dtu_df()[["Symbol"]][1]
+      }
     })
+    
+    output$dtu_table <- renderDT({
+      datatable(dtu_df(), selection = "single", options = list(pageLength = 5))
+    })
+    
+    # Reactive: Downregulated exons and windows
+    downstream_data <- reactive({
+      req(x_flat())
+      downreg_exons <- detect_downreg_exonsv2(x_flat())
+      validate(need(length(downreg_exons) > 0, "No downregulated exons found"))
+      list(
+        exons = downreg_exons,
+        downstream = get_downstream_from_GRanges(downreg_exons),
+        upstream = get_upstream_from_GRanges(downreg_exons)
+      )
+    })
+    
+    # Reactive: Nonregulated exons and windows
+    nonreg_data <- reactive({
+      req(x_flat())
+      downreg_exons <- detect_downreg_exonsv2(x_flat())
+      nonreg_exons <- get_nonreg_exons(x_flat(), downreg_exons)
+      validate(need(length(nonreg_exons) > 0, "No nonregulated exons found"))
+      list(
+        exons = nonreg_exons,
+        downstream = get_downstream_from_GRanges(nonreg_exons),
+        upstream = get_upstream_from_GRanges(nonreg_exons)
+      )
+    })
+    
+    output$exon_level_plot <- renderPlotly({
+      req(selected_gene(), downstream_data())
+      plot_downreg_exons(selected_gene(), sig_res(), downstream_data()$exons)
+    })
+    
+    output$window_summary_plot_down <- renderPlot({
+      req(downstream_data())
+      plot_updownstream_windows(
+        downstream_data()$upstream,
+        downstream_data()$downstream,
+        exon_label = "downreg exon"
+      )
+    })
+    
+    output$window_summary_plot_nonreg <- renderPlot({
+      req(nonreg_data())
+      plot_updownstream_windows(
+        nonreg_data()$upstream,
+        nonreg_data()$downstream,
+        exon_label = "nonreg exon"
+      )
+    })
+    
+    output$plot_window_comparison <- renderPlot({
+      req(nonreg_data())
+      req(downstream_data())
+      plot_window_comparison(
+        downstream_data()$upstream,
+        nonreg_data()$upstream
+      )
+    })
+    
   })
 }
