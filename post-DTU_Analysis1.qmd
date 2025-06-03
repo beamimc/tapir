@@ -1,0 +1,510 @@
+---
+title: "post-DTU Analysis - prev run testingv2.qmd"
+---
+
+```{r}
+source(here::here("app","R","aux_postDTU.R"))
+source(here::here("app","R","plots.R"))
+
+```
+
+Load data
+
+```{r}
+# Load SummarizeExperiment with DTU columns
+se <- readRDS(here::here("data", "glinos_saturn_dtu.rds"))
+
+
+# Load Transcript Database (TxDb)  ---------------------
+txdb <- loadDb(here("data","flair_filter_transcripts.sqlite"))
+
+
+# Load exons annotation
+exons <- readRDS(here::here("data", "glinos_exons.rds")) ##GRangesList
+
+#Filter significant isoforms given a FDR from DTU saturn 
+#column in hardcoded -- change
+get_sig_res <- function(fdr_threshold = 0.1){
+  sig_res <- rowData(se)[["fitDTUResult_exp_vs_ctrl"]] |>
+    tibble::as_tibble() |>
+    dplyr::bind_cols(as.data.frame(rowData(se)[,1:4])) |>
+    dplyr::filter(empirical_FDR < fdr_threshold) |>
+    dplyr::select(gene_id, isoform_id, symbol, estimates, empirical_pval, empirical_FDR) |>
+    dplyr::arrange(empirical_pval)
+
+  sig_res <-  sig_res %>%
+    dplyr::mutate(sign = sign(estimates))
+  return(sig_res)
+  
+}
+
+sig_res <- get_sig_res(0.1) |> 
+            as_tibble()
+sig_res <-  sig_res %>%
+  dplyr::mutate(sign = sign(estimates))
+
+```
+
+Filter significant exons from DTU analysis into GRanges
+
+```{r}
+library(plyranges)
+
+sig_exons <- exons[names(exons) %in% sig_res$isoform_id] #get GRangesList only from the DTUs 61 - 35 genes
+#62 transcripts GRangesList - 1 duplicate `ENSG00000198467.13-305f0cb0` elements 22 and ? check
+
+# #set if exons and internal or boundary 
+# sig_exons <- GRangesList(lapply(sig_exons, function(gr) {
+#     if (length(gr) > 0) {
+#         mcols(gr)$internal <- rep(TRUE, length(gr))
+#         mcols(gr)$internal[1] <- FALSE
+#         mcols(gr)$internal[length(gr)] <- FALSE
+#     }
+#     gr
+# }))
+# flat_sig_exons <- unlist(sig_exons)
+# @justin was here
+sig_exons@unlistData$internal <- TRUE
+sig_exons@unlistData$internal[start(sig_exons@partitioning)] <- FALSE
+sig_exons@unlistData$internal[end(sig_exons@partitioning)] <- FALSE
+sig_exons #GRangesList
+  
+flat_sig_exons <- unlist(sig_exons) #GRagnes
+
+
+#include coef +/- column from the DTU analysis saturn 
+flat_sig_exons$coef <- sig_res$estimates[match(names(flat_sig_exons), sig_res$isoform_id)]
+flat_sig_exons$sign <- sig_res$sign[match(names(flat_sig_exons), sig_res$isoform_id)]
+
+#include gene name for each transcript name 
+flat_sig_exons$gene <- sig_res$gene_id[match(names(flat_sig_exons), sig_res$isoform_id)]
+flat_sig_exons$isoform <- names(flat_sig_exons)
+
+```
+
+# Obtain down-regulated and non-regulated exons
+
+```{r}
+library(plyranges)
+library(dplyr)
+
+detect_downreg_exons <- function(x_flat) {
+  x_flat <- x_flat |>
+    mutate(key = paste0(isoform, "-", exon_rank))
+  # 1) split + vs – strand
+  plus_exons  <- x_flat |> dplyr::filter(sign ==  1)
+  neg_exons <- x_flat |> dplyr::filter(sign ==  -1)
+
+  candidates <- plus_exons |>
+    plyranges::filter_by_non_overlaps_directed(neg_exons) |>
+    dplyr::mutate(SE = TRUE) |>
+    dplyr::filter(internal == TRUE)
+  
+  left_keys <- paste0(candidates$isoform, "-", candidates$exon_rank-1)
+  left_exons <- x_flat |>
+      dplyr::filter(key %in% left_keys)
+
+  right_keys <- paste0(candidates$isoform, "-", candidates$exon_rank+1)
+  right_exons <- x_flat |>
+      dplyr::filter(key %in% right_keys)
+  
+  candidates <-  candidates |>
+          mutate(left_and_right =
+               left_exons %in% neg_exons &
+               right_exons %in% neg_exons
+               )
+  downreg_exons  <- candidates |> dplyr::filter(left_and_right == TRUE)
+
+}
+
+# get down-reg exons
+downreg_exons<- detect_downreg_exons(flat_sig_exons) |> unique()
+flat_sig_exons <- flat_sig_exons |>
+    mutate(key = paste0(isoform, "-", exon_rank))
+
+# visualize summary
+length(downreg_exons) # n of spliced exons 
+length(unique(downreg_exons$gene)) # n of dif genes
+unique(downreg_exons$sign) # all should be + 
+
+
+
+#### Get non-regulated exons (depends on downreg_exons)
+right_keys <- paste0(downreg_exons$isoform, "-", downreg_exons$exon_rank+1)
+nonreg_exons <- flat_sig_exons |>
+    dplyr::filter(key %in% right_keys)
+  
+# get all the exons not in downreg_exons
+non_spliced_exons <- flat_sig_exons |>
+  dplyr::filter(!(exon_id %in% downreg_exons$exon_id)) 
+
+
+#keep only the nearest exon for nonreg_exons 
+nonreg_auxid <-pair_nearest(downreg_exons, non_spliced_exons)$exon_id.y 
+
+# visualize summary
+nonreg_exons <- flat_sig_exons |> dplyr::filter(exon_id %in% nonreg_auxid) |> unique()
+length(nonreg_exons) # n of  exons 
+length(unique(nonreg_exons$gene)) # n of dif genes
+unique(nonreg_exons$sign) 
+
+```
+
+# Get upstream seq from all exons
+
+```{r}
+
+library(plyranges)
+library(Biostrings)
+library(BSgenome)
+library(BSgenome.Hsapiens.UCSC.hg38)
+
+
+width_upstream <- 100
+### DOWNREG exons
+#get ranges of upstream regions
+upstr_downreg_exons <- downreg_exons %>%  #GRanges
+        flank_upstream(width = width_upstream) 
+
+# get sequence from GRanges 
+seq_downreg_exons <-  Hsapiens |>  ## RNAStringSet object of length 150:
+                       getSeq(upstr_downreg_exons) |>
+                       RNAStringSet() 
+metadata(seq_downreg_exons)$aux_id <- upstr_downreg_exons$aux_id
+
+
+### NON-REG exons
+#get ranges of upstream regions
+upstr_nonreg_exons <- nonreg_exons %>%#GRanges
+        flank_upstream(width = width_upstream) 
+
+# get sequence from GRanges
+seq_nonreg_exons <-  Hsapiens |>  ## RNAStringSet object of length 150:
+                       getSeq(upstr_nonreg_exons) |>
+                       RNAStringSet()
+
+metadata(seq_nonreg_exons)$aux_id <- upstr_nonreg_exons$aux_id
+
+```
+
+## Create features for ML from the exons upstream sequences
+
+```{r}
+
+
+dim(get_windows(upstr_downreg_exons))
+dim(get_windows(upstr_nonreg_exons))
+
+dim(get_sliding_windows(upstr_downreg_exons))
+dim(get_sliding_windows(upstr_nonreg_exons))
+
+downreg_exons_df <- create_exon_df(seq_downreg_exons, 
+                                   upstr_downreg_exons,
+                                   1)
+dim(downreg_exons_df)
+
+nonreg_exons_df <- create_exon_df(seq_nonreg_exons, 
+                                       upstr_nonreg_exons,
+                                       0)
+dim(nonreg_exons_df)
+
+total_df <- dplyr::bind_rows(downreg_exons_df, nonreg_exons_df) #features df for ML with both SE and non SE exons label 1/0
+dim(total_df)
+
+## sabe df into file to use it in python for ML 
+# write.csv(total_df, "exon_features_fdr05_v2.csv", row.names = FALSE)
+```
+
+# Plots
+
+```{r}
+library(dplyr)
+library(scales)  # for col_numeric()
+
+# palete
+library(scales)
+library(dplyr)
+
+
+# palete
+# Define palette for negative values: from red (-1) to gray (0)
+pal_neg <- col_numeric(
+  palette = c("#FF2900", "#ffd4cc", "#E0E0E0"),  # red -> dim red -> gray
+  domain = c(-1, 0.8)
+)
+
+# Define palette for positive values: from gray (0) to blue (1)
+pal_pos <- col_numeric(
+  palette = c("#E0E0E0", "#cae3ff", "#4FA4FF"),  # gray -> dim blue -> blue
+  domain = c(0.8, 1)
+)
+
+# Custom function that applies the appropriate palette based on the score
+custom_pal <- function(x) {
+  sapply(x, function(val) {
+    if (val < 0) {
+      pal_neg(val)
+    } else {
+      pal_pos(val)
+    }
+  })
+}
+
+
+sig_res <- sig_res %>%
+  mutate(
+    score = (1 - empirical_pval) * sign(estimates),  # Compute the score
+    computed_color = custom_pal(score)               # Apply your custom palette
+  )
+
+```
+
+## Wiggleplotr plot version isoforms
+
+```{r}
+# setwd("/work/users/b/e/beacm/wiggleplotr")
+# devtools::load_all()
+
+library(dplyr)
+
+plot_downreg_exons <- function(gene_of_interest){
+  
+    
+    
+  #tx from the gene present in the se
+  present_tx <-  names(se)[ rowData(se)$gene_id ==gene_of_interest ]
+  # get the sig tx 
+  sig_tx <- sig_res |> filter(gene_id== gene_of_interest) |> select(isoform_id)
+    
+  exons_toshow <-  exons[sig_tx$isoform_id]
+  
+  # make a named vector of signs
+  signs <- setNames(sig_res$sign, sig_res$isoform_id)
+  # pull out the signs in the same order as our GRangesList names
+  the_signs <- signs[names(exons_toshow)]
+  # build the new names
+  new_names <- ifelse(
+    !is.na(the_signs) & the_signs == 1,
+    paste0("+", names(exons_toshow)),
+    paste0("-", names(exons_toshow))
+  )
+  # assign back
+  names(exons_toshow) <- new_names
+  
+  exons_toshow[["downreg"]] <- downreg_exons |> filter(gene == gene_of_interest)
+  
+  transcript_annotations <- tibble(
+  transcript_id = names(exons_toshow),
+  strand = purrr::map_chr(exons_toshow, function(gr) {
+    strands <- as.character(strand(gr))
+    unique_strands <- unique(strands)
+    if (length(unique_strands) == 1) {
+      unique_strands
+    } else {
+      "*"
+    }
+  })
+)
+
+  transcript_annotations <- transcript_annotations %>%
+  mutate(
+    transcript_id_aux = sub("^[+-]", "", transcript_id)  # Clean for joining
+  )
+
+transcript_annotations <- transcript_annotations %>%
+  left_join(
+    sig_res %>% select(isoform_id, computed_color),
+    by = c("transcript_id_aux" = "isoform_id")
+  ) %>%
+  mutate(
+    color_by = ifelse(is.na(computed_color), "green", computed_color)
+  ) %>%
+  select(-computed_color)  # optional: remove helper column
+
+  wiggleplotr::plotTranscripts(exons_toshow, 
+                               transcript_annotations = transcript_annotations, 
+                               rescale_introns = TRUE)
+  
+  
+}
+
+
+```
+
+```{r}
+# pdf("all_downreg_exonsv22_fdr05_colors.pdf", width = 6, height = 4)
+for (gene in unique(downreg_exons$gene)[1]) {
+  print(plot_downreg_exons(gene))
+}
+# dev.off()
+
+```
+
+## Plotgardener Plot version isoforms
+
+```{r}
+
+plot_tx <- function(gene_of_interest)
+  {
+  #tx from the gene present in the se
+  present_tx <-  names(se)[ rowData(se)$gene_id ==gene_of_interest ]
+  # get the sig tx 
+  sig_tx <- sig_res |> filter(gene_id== gene_of_interest) |> select(isoform_id)
+  
+  
+  
+  # Extract genomic coordinates for the gene
+  gene_coords <- genes(txdb, filter = list(GENEID = gene_of_interest))
+  transcripts <- transcripts(txdb, filter = list(GENEID = gene_of_interest))
+  
+  # filter to keep only the transcripts in the experiment
+  assay_transcripts <-  present_tx
+  
+  # Extract chromosome, start, and end positions of the gene
+  gene_chrom <- as.character(seqnames(gene_coords))
+  gene_start <- min(start(gene_coords))
+  gene_end <- max(end(gene_coords))
+  
+  # Define plotting parameters
+  par <- pgParams(
+    chrom = gene_chrom, 
+    chromstart = gene_start, chromend = gene_end,
+    assembly = db_assembly, just = c("left", "bottom")
+  )
+
+  
+  # Dynamically adjust plot dimensions based on transcript count
+  plotT_height <- round(length(assay_transcripts) / 3, 3)  # Height scales with transcript count
+  page_height <- plotT_height + 1  
+  page_width <- 5 
+  # output_file <-file.path(wd, "app/www/temp.png")
+  # Save the plot as a PNG file
+  # png(output_file, width = page_width * 200, height = page_height * 200, res = 170)
+  
+  # Create a new plotting page
+  pageCreate(
+    width = page_width + 1, height = page_height, 
+    default.units = "inches", showGuides = FALSE
+  )  
+  
+  # Plot transcripts with dynamic height 
+  plotgardener::plotTranscripts(
+    params = par, 
+    x = 0.5, y = 0, width = page_width, height = plotT_height, 
+    just = c("left", "top"), default.units = "inches",
+    # transcriptHighlights = hilite,
+    # transcriptFilter = assay_transcripts,
+    limitLabel = FALSE,
+    fontsize = 9,
+    labels = "transcript"
+  )
+  
+  # Add genome coordinate labels to the plot
+  plotGenomeLabel(
+    chrom = gene_chrom, 
+    chromstart = gene_start, chromend = gene_end,
+    x = 0.5, y = page_height - 0.5,  
+    just = c("left", "top"),
+    length = page_width
+  ) 
+  
+  # dev.off() 
+}
+
+# Identify the gene of interest by its geneid given its symbol (selectizeInput)
+#gene_of_interest <- "ENSG00000004455.16"
+#plot_tx(gene_of_interest)
+```
+
+Plots
+
+```{r}
+
+bp_percent <-  get_bp_percent(seq_downreg_exons)
+barplot_bppercent(bp_percent)
+
+dibp_percent <-  get_dibp_features(seq_downreg_exons)
+barplot_bppercent(dibp_percent)
+
+
+tribp_percent <-  get_tribp_features(seq_downreg_exons)
+barplot_bppercent(tribp_percent)
+
+
+bp_percent <-  get_bp_percent(seq_nonreg_exons)
+barplot_bppercent(bp_percent)
+
+dibp_percent <-  get_dibp_features(seq_nonreg_exons)
+barplot_bppercent(dibp_percent)
+
+
+tribp_percent <-  get_tribp_features(seq_nonreg_exons)
+barplot_bppercent(tribp_percent)
+
+```
+
+```{r}
+# % of bp
+se_percent <-  get_bp_percent(seq_downreg_exons)
+non_se_percent <-  get_bp_percent(seq_nonreg_exons)
+barplot_bppercent2(se_percent, non_se_percent)
+
+# % of pairs
+se_percent <-  get_dibp_features(seq_downreg_exons)
+non_se_percent <-  get_dibp_features(seq_nonreg_exons)
+barplot_bppercent2(se_percent, non_se_percent)
+
+# % of triplets
+se_percent <-  get_tribp_features(seq_downreg_exons)
+non_se_percent <-  get_tribp_features(seq_nonreg_exons)
+barplot_bppercent2(se_percent, non_se_percent)
+```
+
+```{r}
+#windoes is #exons x #windows*4 (not summarized by window yet) # 
+downreg_exons_windows <- get_sliding_windows(upstr_downreg_exons,
+                                             window_width = 10, 
+                                             width_upstream = width_upstream,
+                                             overlap = 5) 
+
+nonreg_exons_windows <- get_sliding_windows(upstr_nonreg_exons, 
+                                            window_width = 10, 
+                                            width_upstream = width_upstream, 
+                                            overlap = 5 ) 
+
+plot_exon_summary(downreg_exons_windows, nonreg_exons_windows, nucleotide = "A")
+
+```
+
+```{r}
+library(patchwork)
+nucs <- c("G","A","U","C")
+
+plots <- lapply(nucs, function(nt) {
+  plot_exon_summary(downreg_exons_windows, nonreg_exons_windows, nucleotide = nt) +
+    ggtitle(nt)
+})
+
+# 3) Combine and enforce common y‐axis --------------------------------------
+combined <- wrap_plots(plots, ncol = 4) & 
+    coord_cartesian(ylim  = c(0,0.5)) & 
+    theme(legend.position = "bottom")
+
+combined
+
+```
+
+```{r}
+
+
+downreg_exons_wind_downstream <- get_downstream_from_GRanges(downreg_exons)
+plot_window_compare(downreg_exons_windows, downreg_exons_wind_downstream,
+                    exon_label="downreg exon")
+
+
+
+nonreg_exons_wind_downstream <- get_downstream_from_GRanges(nonreg_exons)
+plot_window_compare(nonreg_exons_windows, nonreg_exons_wind_downstream,
+                    exon_label="nonreg exon")
+
+```
