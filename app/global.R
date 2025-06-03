@@ -154,20 +154,18 @@ condition_colors <- setNames(colors[seq_along(unique_conditions)], unique_condit
 
 get_x_flat <- function(sig_res){
   sig_exons <- exons[names(exons) %in% sig_res$isoform_id] #get GRangesList only from the DTUs 61 - 35 genes
-  #62 transcripts GRangesList - 1 duplicate `ENSG00000198467.13-305f0cb0` elements 22 and 24
+  #62 transcripts GRangesList - 1 duplicate `ENSG00000198467.13-305f0cb0` 
   #remove duplicate 
-  sig_exons <- sig_exons[-22]
+  name_counts <- table(names(sig_exons))
+  dup_names <- names(name_counts)[name_counts > 1]
+  sig_exons <- sig_exons[! duplicated(names(sig_exons))]
+  
   
   # set if exons and internal or boundary 
-  sig_exons <- GRangesList(lapply(sig_exons, function(gr) {
-    if (length(gr) > 0) {
-      mcols(gr)$internal <- rep(TRUE, length(gr))
-      mcols(gr)$internal[1] <- FALSE
-      mcols(gr)$internal[length(gr)] <- FALSE
-    }
-    gr
-  }))
-  
+  sig_exons@unlistData$internal <- TRUE
+  sig_exons@unlistData$internal[start(sig_exons@partitioning)] <- FALSE
+  sig_exons@unlistData$internal[end(sig_exons@partitioning)] <- FALSE
+
   flat_sig_exons <- unlist(sig_exons)
   
   #include coef +/- column from the DTU analysis saturn 

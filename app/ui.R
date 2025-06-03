@@ -6,6 +6,27 @@ ui <- page_sidebar(
 
   sidebar = sidebarPanel(
     width = 12,   
+    fluidRow(
+      column(
+        width = 6,
+        radioButtons(
+          inputId  = "condition1",
+          label    = "Condition 1",
+          choices  = c("wt", "exp"),
+          selected = "wt"
+        )
+      ),
+      column(
+        width = 6,
+        radioButtons(
+          inputId  = "condition2",
+          label    = "Condition 2",
+          choices  = c("wt", "exp"),
+          selected = "exp"
+        )
+    )
+    ),
+    br(), br(),br(),
     sliderInput(
       "fdr_threshold", "FDR threshold:",
       min = 0, max = 0.5, value = 0.05, step = 0.01

@@ -43,7 +43,7 @@ get_nonreg_exons <- function(x_flat, downreg_exons){
   
   
   #keep only the nearest exon for nonreg_exons 
-  nonreg_auxid <-pair_nearest(downreg_exons, non_spliced_exons)$exon_id.y #only 22 unique -- many SE exons have the same nearest
+  nonreg_auxid <-pair_nearest(downreg_exons, non_spliced_exons)$exon_id.y
   nonreg_exons <- x_flat |> filter(exon_id %in% nonreg_auxid) |> unique()
   return(nonreg_exons)
   

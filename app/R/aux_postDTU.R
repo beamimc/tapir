@@ -447,15 +447,18 @@ plot_window_comparison <- function(upstr_downreg_exons,
                                    width_upstream=100){
   nucs <- c("G","A","U","C")
   #windoes is #exons x #windows*4 (not summarized by window yet) # 
-  downreg_exons_windows <- get_sliding_windows(upstr_downreg_exons,#slid windows # 
-                                               window_width = 10, # 
-                                               width_upstream = width_upstream, ## maches flankupsteam # 
-                                               overlap = 5) 
+  # downreg_exons_windows <- get_sliding_windows(upstr_downreg_exons,#slid windows # 
+  #                                              window_width = 10, # 
+  #                                              width_upstream = width_upstream, ## maches flankupsteam # 
+  #                                              overlap = 5) 
+  # 
+  # nonreg_exons_windows <- get_sliding_windows(upstr_nonreg_exons,#slid windows 
+  #                                             window_width = 10, 
+  #                                             width_upstream = width_upstream, ## maches flankupsteam 
+  #                                             overlap = 5 )
+  downreg_exons_windows <- upstr_downreg_exons
+  nonreg_exons_windows <- upstr_nonreg_exons
   
-  nonreg_exons_windows <- get_sliding_windows(upstr_nonreg_exons,#slid windows 
-                                              window_width = 10, 
-                                              width_upstream = width_upstream, ## maches flankupsteam 
-                                              overlap = 5 ) 
   plots <- lapply(nucs, function(nt) {
     plot_exon_summary(downreg_exons_windows, 
                       nonreg_exons_windows, 
