@@ -1,38 +1,5 @@
 
-
-# Function: Plot isoforms per gene using wiggleplotr
-# ---------------------------------------------------------------
-exon_level_plot <- function(gene_symbol) {
-
-  # sig_res |> filter(symbol=="TPM2")|> pull(gene_id)|>unique()
-  # #tx from the gene present in the se
-  # present_tx <-  names(se)[ rowData(se)$gene_id ==gene ]
-  # # get the sig tx 
-  sig_tx <- sig_res |> filter(symbol== gene_symbol) |> select(isoform_id)
-  p <- wiggleplotr::plotTranscripts(exons[sig_tx$isoform_id], rescale_introns = TRUE)
-  return(p)
-}
-
-
-# Function: Plot isoforms per gene using wiggleplotr
-# ---------------------------------------------------------------
-plot_gene_txs_wiggleplotr <- function(gene) {
-  
-  # Extract transcript IDs associated with the selected gene
-  tx_to_show <- txp %>%
-    filter(symbol == gene) %>%
-    as_tibble() %>%
-    dplyr::pull(txid)
-  
-  # Extract exon structures for the selected transcripts
-  exons_list <- exons_per_txp_GRL[tx_to_show]
-  
-  # Generate transcript plot
-  wiggleplotr::plotTranscripts(exons_list, rescale_introns = FALSE)
-}
-
-
-# Function: Plot isoforms per gene using plotgardener
+# Function: Plot isoforms per gene using plotgardener ##outdated
 # ---------------------------------------------------------------
 plot_gene_txs <- function(gene_symbol , output_file, mean_diffs_DTU, pvals) {
   
@@ -58,8 +25,6 @@ plot_gene_txs <- function(gene_symbol , output_file, mean_diffs_DTU, pvals) {
     chromstart = gene_start, chromend = gene_end,
     assembly = db_assembly, just = c("left", "bottom")
   )
-  
-
   
   #color all txp corresponding to the gene
   df_values <- data.frame(
@@ -115,7 +80,8 @@ plot_gene_txs <- function(gene_symbol , output_file, mean_diffs_DTU, pvals) {
 # Function: create df_long for ggplot functions given 2 conditions 
 # ---------------------------------------------------------------
 
-get_plot_data <- function(prop,
+get_plot_data <- function(se, 
+                          prop,
                            cd1 = "ctrl", 
                            cd2 = "exp"
                            ) {
@@ -130,7 +96,7 @@ get_plot_data <- function(prop,
   colnames(plot_data) <- c("Sample", "Transcript", "Proportion")
   # add conditions
   sample_metadata <- as.data.frame(colData(se)[, c("sample_id", "condition")])
-  plot_data <- merge(plot_data, sample_metadata, by.x = "Sample", by.y = "sample_id") #inner joinis
+  plot_data <- merge(plot_data, sample_metadata, by.x = "Sample", by.y = "sample_id") #inner joins
   plot_data |>
     rename(Condition = condition)
   return(plot_data)
@@ -140,9 +106,9 @@ get_plot_data <- function(prop,
 # Function: Boxplots count comparion KD vs WT (change hardcode)
 # ---------------------------------------------------------------
 
-boxplot_count_comparison <- function(prop, cd1 = "ctrl", cd2 = "exp") {
+boxplot_count_comparison <- function(se, prop, cd1 = "ctrl", cd2 = "exp") {
   
-  plot_data <- get_plot_data(prop)
+  plot_data <- get_plot_data(se, prop)
   
   # Filter the color palette to only include the selected conditions
   selected_colors <- condition_colors[c(cd1, cd2)]
@@ -174,9 +140,9 @@ get_transcript_colors <- function(transcripts, palette_name = "Set2") {
 # Function: spaguetti plot for transcript comparion KD vs WT (change hardcode)
 # ---------------------------------------------------------------
 
-line_plot_txp_comparison  <- function(prop, txp_colors, cd1 = "ctrl", cd2 = "exp"){
+line_plot_txp_comparison  <- function(se, prop, txp_colors, cd1 = "ctrl", cd2 = "exp"){
   
-  plot_data <- get_plot_data(prop)
+  plot_data <- get_plot_data(se, prop)
   
   summary_data <- plot_data |>
     group_by(Transcript, condition) |>
@@ -420,9 +386,7 @@ go_plot <- function(gene_symbol_list) {
       ont           = ont,
       pvalueCutoff  = 0.05,
       readable      = TRUE
-    )
-    print(head(ego@result))
-    
+    )  
     
     if (is.null(ego) || nrow(ego@result) == 0) {
       return(blank_panel(paste0(ont, " — no enriched terms")))

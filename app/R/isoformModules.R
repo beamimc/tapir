@@ -80,7 +80,7 @@ isoformAnalysisUI <- function(id) {
 
 
 # Module server functions
-isoformAnalysisServer <- function(id, gene_ids, dtu_df, sig_res) {
+isoformAnalysisServer <- function(id, se, dtu_df, sig_res) {
   moduleServer(id, function(input, output, session) {
 
     # no updateSelectizeInput needed
@@ -99,17 +99,17 @@ isoformAnalysisServer <- function(id, gene_ids, dtu_df, sig_res) {
     # Reactive values
     mean_diffs_DTU <- reactive({
       req(selected_gene())
-      calc_mean_diff_DTU(selected_gene(), sig_res() )
+      calc_mean_diff_DTU(se, selected_gene(), sig_res() )
     })
     
     prop <- reactive({
       req(selected_gene())
-      calc_prop(selected_gene(), sig_res())
+      calc_prop(se, selected_gene(), sig_res())
     })
     
     pvals <- reactive({
       req(selected_gene())
-      get_pvals(selected_gene(), sig_res())
+      get_pvals(se, selected_gene(), sig_res())
     })
     
     # plot_path <- reactive({
@@ -168,7 +168,7 @@ isoformAnalysisServer <- function(id, gene_ids, dtu_df, sig_res) {
     
     output$lineplot <- renderPlotly({
       req(prop())
-      line_plot_txp_comparison(prop(), txp_colors())
+      line_plot_txp_comparison(se, prop(), txp_colors())
     })
   })
 }

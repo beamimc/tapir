@@ -1,4 +1,5 @@
-server <- function(input, output, session) {
+server <- function(input, output, session, data) {
+  se <- data$se
   applied_fdr <- reactiveVal(0.05)
   observeEvent(input$apply_fdr, {
     applied_fdr(input$fdr_threshold)  # apply only when button is clicked
@@ -6,7 +7,7 @@ server <- function(input, output, session) {
   
   # Define sig_res reactively based on the applied FDR
   sig_res <- reactive({
-    get_sig_res(applied_fdr())
+    get_sig_res(se, applied_fdr())
   })
   
   filtered_dtu_df <- reactive({
@@ -18,13 +19,13 @@ server <- function(input, output, session) {
     x_flat <- get_x_flat(sig_res())  # reuse same reactive sig_res()
     x_flat
   })
+  # 
+  # gene_ids <- reactive({
+  #   sort(unique(sig_res()$symbol))
+  # })
+  # 
   
-  gene_ids <- reactive({
-    sort(unique(sig_res()$symbol))
-  })
-  
-  
-  isoformAnalysisServer("isoform", gene_ids, filtered_dtu_df, sig_res)
+  isoformAnalysisServer("isoform",se, filtered_dtu_df, sig_res)
   exonLevelServer("exon", filtered_dtu_df, x_flat, sig_res)
   summaryStatsServer("summary", filtered_dtu_df, sig_res)
   

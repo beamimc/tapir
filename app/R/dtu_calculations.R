@@ -1,60 +1,3 @@
-# Core Libraries ----------------------------------------------------------------
-library(shiny)                 # Web application framework
-library(ggplot2)               # Plotting
-library(grid)                  # Grid-based graphics
-library(dplyr)                 # Data manipulation
-library(here)                  # Project root management
-library(scales)                # Scale functions
-library(stringr)               # String manipulation
-library(DT)                    # Interactive tables
-library(plotly)                # Interactive plotting
-library(bslib)                 # Bootstrap themes
-library(purrr)                 # Functional programming
-
-# Genomics & Annotation --------------------------------------------------------
-library(SummarizedExperiment)  # Genomic data structures
-library(GenomicFeatures)       # Process genomic features
-library(GenomicRanges)         # Manipulate genomic ranges
-library(org.Hs.eg.db)          # Human gene annotation
-library(GO.db)                 # Gene Ontology terms
-library(biomaRt)               # Query Ensembl data
-library(Biostrings)            # DNA/RNA/protein sequences
-library(BSgenome)              # Genome data handling
-library(BSgenome.Hsapiens.UCSC.hg38)  # Human genome (hg38)
-# ─── Packages ────────────────────────────────────────────────────────────────
-library(clusterProfiler)
-library(enrichplot)
-library(patchwork)   # for side-by-side layouts
-# Plotting & Visualization -----------------------------------------------------
-library(plotgardener)          # Genomic plotting
-library(wiggleplotr)           # Wiggle plot visualization
-library(plyranges)             # Tidy-style genomic range manipulation
-library(reshape2)              # Data reshaping
-library(viridis)               # Color palettes
-library(RColorBrewer)          # Color palettes
-library(reactable)
-library(shinycssloaders)
-
-# Load Local Development Package -----------------------------------------------
-setwd("/work/users/b/e/beacm/wiggleplotr")
-devtools::load_all()
-
-# Set Working Directory and Source Scripts -------------------------------------
-setwd(here::here())  
-wd <- getwd() 
-
-# Source additional scripts
-source(file.path(wd, "app/R/plots.R"))
-source(file.path(wd, "app/R/gene_descriptions.R"))
-source(file.path(wd, "app/R/exonModules.R"))
-source(file.path(wd, "app/R/isoformModules.R"))
-source(file.path(wd, "app/R/summaryModules.R"))
-source(file.path(wd, "app/R/aux_postDTU.R"))
-source(file.path(wd, "app/R/isoform_plots.R"))
-source(file.path(wd, "app/R/exon_detection.R"))
-
-# GLOBAL Variables, Palettes & Helper Functions --------------------------------
-# ------------------------------------------------------------------------------
 
 my_theme <- bs_theme(version = 5, bootswatch = "yeti")
 width_upstream <- 100
@@ -97,59 +40,20 @@ custom_pal <- function(x) {
 }
 
 
-# Load SummarizedExperiment Object ---------------------------------------------
-se <- readRDS(here::here("data", "glinos_saturn_dtu.rds"))
 
-# # Load table Object with satuRn DTU Analysis 
-# sig_res <- read.csv(here::here("data", "glinos_saturn_dtu.csv"), 
-#                     stringsAsFactors = FALSE)|>
-#             as_tibble()
-
-# Load Transcript Database (TxDb) & Prepare for Annotation ---------------------
-txdb <- loadDb(here("data","flair_filter_transcripts.sqlite"))
-
-exons <- readRDS(here::here("data", "glinos_exons.rds"))
-get_sig_res <- function(fdr_threshold){
+get_sig_res <- function(se, fdr_threshold){
   sig_res <- rowData(se)[["fitDTUResult_exp_vs_ctrl"]] |>
     tibble::as_tibble() |>
     dplyr::bind_cols(as.data.frame(rowData(se)[,1:4])) |>
     dplyr::filter(empirical_FDR < fdr_threshold) |>
     dplyr::select(gene_id, isoform_id, symbol, estimates, empirical_pval, empirical_FDR) |>
     dplyr::arrange(empirical_pval)
-
+  
   sig_res <-  sig_res %>%
     dplyr::mutate(sign = sign(estimates))
   return(sig_res)
   
 }
-
-sig_res <- get_sig_res(0.05) #default 0.05 fdr
-
-# # Gene Symbols for UI
-# gene_ids <- sort(unique(sig_res$symbol))
-# symbol <- gene_ids[1]
-
-
-#  Assembly for plotgardener
-db_assembly <- plotgardener::assembly(
-  Genome = "hg38",
-  TxDb = txdb,
-  OrgDb = org.Hs.eg.db,
-  gene.id.column = "GENEID",
-  display.column = "GENEID",
-  BSgenome = NULL
-)
-
-
-# Condition Colors 
-colors <- c(
-  "#3BD4D0",  # WT
-  "#AF2AAF"   # KD PTBP1
-)
-unique_conditions <- unique(colData(se)$condition)
-condition_colors <- setNames(colors[seq_along(unique_conditions)], unique_conditions)
-
-
 
 
 get_x_flat <- function(sig_res){
@@ -165,7 +69,7 @@ get_x_flat <- function(sig_res){
   sig_exons@unlistData$internal <- TRUE
   sig_exons@unlistData$internal[start(sig_exons@partitioning)] <- FALSE
   sig_exons@unlistData$internal[end(sig_exons@partitioning)] <- FALSE
-
+  
   flat_sig_exons <- unlist(sig_exons)
   
   #include coef +/- column from the DTU analysis saturn 
@@ -201,7 +105,7 @@ get_dtu_df <- function(sig_res){
 # ------------------------------------------------------------------------------
 
 # Calculate the proportion of counts per transcript for a given gene symbol
-calc_prop <- function(symbol, sig_res) {
+calc_prop <- function(se, symbol, sig_res) {
   cts <- assay(se, "counts")[mcols(se)$symbol == symbol, ]
   prop <- t(cts) / colSums(cts)
   
@@ -214,7 +118,7 @@ calc_prop <- function(symbol, sig_res) {
 }
 
 # Calculate mean differences for Differential Transcript Usage (DTU)
-calc_mean_diff_DTU <- function(gene_symbol, sig_res,
+calc_mean_diff_DTU <- function(se, gene_symbol, sig_res,
                                cd1 = "ctrl", cd2 = "exp") {
   cts <- assay(se, "counts")[mcols(se)$symbol == gene_symbol, ]
   prop <- t(cts) / colSums(cts)
@@ -235,7 +139,7 @@ calc_mean_diff_DTU <- function(gene_symbol, sig_res,
 }
 
 # Extract p-values from the Saturn DTU analysis for a given gene symbol
-get_pvals <- function(gene_symbol, sig_res, 
+get_pvals <- function(se, gene_symbol, sig_res, 
                       cd1 = "ctrl", cd2 = "exp") {
   # Identify the column in rowData that contains DTU results
   saturn_col <- paste0("fitDTUResult_", cd2, "_vs_", cd1)
@@ -251,4 +155,43 @@ get_pvals <- function(gene_symbol, sig_res,
   return(pvals)
 }
 
+parse_saturnDTU_conditions <- function(se) {
+  rd_names <- names(SummarizedExperiment::rowData(se))
+  dtu_cols <- grep("^fitDTUResult_", rd_names, value = TRUE)
+  
+  if (length(dtu_cols) == 0) return(tibble::tibble())
+  
+  condition_df <- stringr::str_match(dtu_cols, "^fitDTUResult_(.+)_vs_(.+)$")
+  
+  valid <- complete.cases(condition_df)
+  
+  tibble::tibble(
+    column_name = dtu_cols[valid],
+    cd1 = condition_df[valid, 2],
+    cd2 = condition_df[valid, 3]
+  )
+}
 
+get_dtu_column_name <- function(se, cd1, cd2) {
+  # All column names in rowData
+  rd_names <- names(SummarizedExperiment::rowData(se))
+  
+  # Build the two possible column names
+  direct <- paste0("fitDTUResult_", cd2, "_vs_", cd1)
+  reverse <- paste0("fitDTUResult_", cd1, "_vs_", cd2)
+  
+  # Try direct match
+  if (direct %in% rd_names) {
+    return(direct)
+  }
+  
+  # Try reverse match
+  if (reverse %in% rd_names) {
+    return(reverse)
+  }
+  
+  # Not found
+  stop(
+    sprintf("No DTU result found for '%s vs %s' or '%s vs %s'", cd2, cd1, cd1, cd2)
+  )
+}
