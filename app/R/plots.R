@@ -1,4 +1,19 @@
 
+get_transcript_colors <- function(transcripts, palette_name = "Set2") {
+  transcripts <- sort(unique(transcripts))  # ensure consistent order
+  n_colors <- max(3, length(transcripts))
+  
+  # If Set2 runs out, fall back to hue palette
+  if (n_colors <= 8) {
+    palette <- RColorBrewer::brewer.pal(n = n_colors, name = palette_name)
+  } else {
+    palette <- scales::hue_pal()(n_colors)
+  }
+  
+  setNames(palette[seq_along(transcripts)], transcripts)
+}
+
+
 # Function: Plot isoforms per gene using plotgardener ##outdated
 # ---------------------------------------------------------------
 plot_gene_txs <- function(gene_symbol , output_file, mean_diffs_DTU, pvals) {
@@ -122,19 +137,6 @@ boxplot_count_comparison <- function(se, prop, cd1 = "ctrl", cd2 = "exp") {
     theme(axis.text.x = element_text(angle = 0))  # Rotate x-axis labels if needed
 }
 
-get_transcript_colors <- function(transcripts, palette_name = "Set2") {
-  transcripts <- sort(unique(transcripts))  # ensure consistent order
-  n_colors <- max(3, length(transcripts))
-  
-  # If Set2 runs out, fall back to hue palette
-  if (n_colors <= 8) {
-    palette <- RColorBrewer::brewer.pal(n = n_colors, name = palette_name)
-  } else {
-    palette <- scales::hue_pal()(n_colors)
-  }
-  
-  setNames(palette[seq_along(transcripts)], transcripts)
-}
 
 
 # Function: spaguetti plot for transcript comparion KD vs WT (change hardcode)
