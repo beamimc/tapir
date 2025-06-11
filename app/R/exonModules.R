@@ -64,7 +64,7 @@ exonLevelUI <- function(id) {
 }
     
     
-exonLevelServer <- function(id, dtu_df, x_flat, sig_res) {
+exonLevelServer <- function(id, exons, dtu_df, x_flat, sig_res) {
   moduleServer(id, function(input, output, session) {
 
     
@@ -108,7 +108,7 @@ exonLevelServer <- function(id, dtu_df, x_flat, sig_res) {
     
     output$exon_level_plot <- renderPlotly({
       req(selected_gene(), downstream_data())
-      plot_downreg_exons(selected_gene(), sig_res(), downstream_data()$exons)
+      plot_downreg_exons(exons, selected_gene(), sig_res(), downstream_data()$exons)
     })
     
     output$window_summary_plot_down <- renderPlot({

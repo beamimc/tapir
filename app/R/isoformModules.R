@@ -80,7 +80,7 @@ isoformAnalysisUI <- function(id) {
 
 
 # Module server functions
-isoformAnalysisServer <- function(id, se, dtu_df, sig_res) {
+isoformAnalysisServer <- function(id, se, exons, dtu_df, sig_res) {
   moduleServer(id, function(input, output, session) {
 
     # no updateSelectizeInput needed
@@ -151,7 +151,7 @@ isoformAnalysisServer <- function(id, se, dtu_df, sig_res) {
       req(selected_gene())
 
       
-      plot_isoforms_wiggle(selected_gene(), sig_res())
+      plot_isoforms_wiggle(exons, selected_gene(), sig_res())
     })
     
     # Example: before calling plotting functions

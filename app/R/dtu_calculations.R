@@ -56,7 +56,7 @@ get_sig_res <- function(se, fdr_threshold){
 }
 
 
-get_x_flat <- function(sig_res){
+get_x_flat <- function(exons, sig_res){
   sig_exons <- exons[names(exons) %in% sig_res$isoform_id] #get GRangesList only from the DTUs 61 - 35 genes
   #62 transcripts GRangesList - 1 duplicate `ENSG00000198467.13-305f0cb0` 
   #remove duplicate 

@@ -1,5 +1,8 @@
 server <- function(input, output, session, data) {
+  
   se <- data$se
+  exons <- data$exons
+  
   applied_fdr <- reactiveVal(0.05)
   observeEvent(input$apply_fdr, {
     applied_fdr(input$fdr_threshold)  # apply only when button is clicked
@@ -16,7 +19,7 @@ server <- function(input, output, session, data) {
   })
   
   x_flat <- reactive({
-    x_flat <- get_x_flat(sig_res())  # reuse same reactive sig_res()
+    x_flat <- get_x_flat(exons, sig_res())  # reuse same reactive sig_res()
     x_flat
   })
   # 
@@ -25,8 +28,8 @@ server <- function(input, output, session, data) {
   # })
   # 
   
-  isoformAnalysisServer("isoform",se, filtered_dtu_df, sig_res)
-  exonLevelServer("exon", filtered_dtu_df, x_flat, sig_res)
+  isoformAnalysisServer("isoform", se, exons, filtered_dtu_df, sig_res)
+  exonLevelServer("exon",exons, filtered_dtu_df, x_flat, sig_res)
   summaryStatsServer("summary", filtered_dtu_df, sig_res)
   
 }
