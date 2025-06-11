@@ -2,7 +2,7 @@
 plot_isoforms_wiggle <- function(exons, gene_of_interest, sig_res){
   sig_res <- sig_res %>%
     mutate(
-      score = (1 - empirical_pval) * sign(estimates),  # Compute the score
+      score = (1 - empirical_pval) * sign(estimates) * dtu_direction,  # Compute the score
       computed_color = custom_pal(score)               # Apply your custom palette
     )
   
@@ -54,7 +54,7 @@ plot_isoforms_wiggle <- function(exons, gene_of_interest, sig_res){
 plot_downreg_exons <- function(exons, gene_of_interest, sig_res, downreg_exons){
   sig_res <- sig_res %>%
     mutate(
-      score = (1 - empirical_pval) * sign(estimates),  # Compute coloring score
+      score = (1 - empirical_pval) * sign(estimates) * dtu_direction,  # Compute coloring score
       computed_color = custom_pal(score)               # Apply custom palette
     )
 

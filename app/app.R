@@ -37,7 +37,7 @@ devtools::load_all()
 setwd(here::here())  
 wd <- getwd() 
 
-app <- function(se, exons, txdb, app_dir = ".") {
+app <- function(se, exons, app_dir = ".") {
   
   #load functions in app/R/
   helpers_env <- new.env()
@@ -46,14 +46,24 @@ app <- function(se, exons, txdb, app_dir = ".") {
   list2env(as.list(helpers_env), envir = environment())
   
   #load data
-  data <- list(se = se, exons = exons, txdb = txdb)
+  data <- list(se = se, exons = exons)
   se <- data$se 
   
-  conditions <- parse_saturnDTU_conditions(se)
+  conditions <- parse_saturnDTU_conditions(see)
+  condition_choices_df <- purrr::map_dfr(seq_len(nrow(conditions)), function(i) {
+    c1 <- conditions$cd1[i]
+    c2 <- conditions$cd2[i]
+    tibble::tibble(
+      label = c(paste(c1, "vs", c2), paste(c2, "vs", c1)),
+      cd1 = c(c1, c2),
+      cd2 = c(c2, c1)
+    )
+  })
+  data$condition_choices <-  condition_choices_df
   
   
   source(file.path(app_dir, "ui.R"), local = TRUE)
-  ui <- build_ui(conditions)
+  ui <- build_ui(condition_choices)
   server_func <- source(file.path(app_dir, "server.R"), local = TRUE)$value
   
   #launch App

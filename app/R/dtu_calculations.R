@@ -40,9 +40,32 @@ custom_pal <- function(x) {
 }
 
 
+get_dtu_column <- function(se, cd1, cd2) {
+  rd_names <- names(SummarizedExperiment::rowData(se))
+  
+  direct <- paste0("fitDTUResult_", cd2, "_vs_", cd1) #exp_vs_ctl (cd1==ref)
+  reverse <- paste0("fitDTUResult_", cd1, "_vs_", cd2)
+  
+  if (direct %in% rd_names) {
+    return(list(column_name = direct, direction = 1))
+  }
+  
+  if (reverse %in% rd_names) {
+    return(list(column_name = reverse, direction = -1))
+  }
+  
+  stop(
+    sprintf("No DTU result found for '%s vs %s' or '%s vs %s'", cd2, cd1, cd1, cd2)
+  )
+}
 
-get_sig_res <- function(se, fdr_threshold){
-  sig_res <- rowData(se)[["fitDTUResult_exp_vs_ctrl"]] |>
+
+get_sig_res <- function(se, fdr_threshold, cd1, cd2){
+  dtu_column <- get_dtu_column(se, cd1, cd2)
+  column <- dtu_column$column_name
+  dtu_direction <- dtu_column$direction
+  
+  sig_res <- rowData(se)[[column]] |>
     tibble::as_tibble() |>
     dplyr::bind_cols(as.data.frame(rowData(se)[,1:4])) |>
     dplyr::filter(empirical_FDR < fdr_threshold) |>
@@ -50,7 +73,12 @@ get_sig_res <- function(se, fdr_threshold){
     dplyr::arrange(empirical_pval)
   
   sig_res <-  sig_res %>%
-    dplyr::mutate(sign = sign(estimates))
+    dplyr::mutate(sign = sign(estimates),
+                  dtu_column = column,
+                  dtu_direction,
+                  cd1 = cd1,
+                  cd2 = cd2)
+  
   return(sig_res)
   
 }
@@ -118,8 +146,10 @@ calc_prop <- function(se, symbol, sig_res) {
 }
 
 # Calculate mean differences for Differential Transcript Usage (DTU)
-calc_mean_diff_DTU <- function(se, gene_symbol, sig_res,
-                               cd1 = "ctrl", cd2 = "exp") {
+calc_mean_diff_DTU <- function(se, gene_symbol, sig_res) {
+  cd1 <- sig_res$cd1|>unique()
+  cd2 <- sig_res$cd2|>unique()
+  
   cts <- assay(se, "counts")[mcols(se)$symbol == gene_symbol, ]
   prop <- t(cts) / colSums(cts)
   
@@ -139,13 +169,12 @@ calc_mean_diff_DTU <- function(se, gene_symbol, sig_res,
 }
 
 # Extract p-values from the Saturn DTU analysis for a given gene symbol
-get_pvals <- function(se, gene_symbol, sig_res, 
-                      cd1 = "ctrl", cd2 = "exp") {
+get_pvals <- function(se, gene_symbol, sig_res) {
   # Identify the column in rowData that contains DTU results
-  saturn_col <- paste0("fitDTUResult_", cd2, "_vs_", cd1)
+  dtu_column <- sig_res$dtu_column |> unique()
   
   # Subset rowData for matching symbol and extract p-values
-  pvals <- rowData(se[rowData(se)$symbol == gene_symbol, ])[[saturn_col]]$empirical_pval
+  pvals <- rowData(se[rowData(se)$symbol == gene_symbol, ])[[dtu_column]]$empirical_pval
   names(pvals) <- rownames(rowData(se[rowData(se)$symbol == gene_symbol, ]))
   sig_ids <- sig_res %>%
     filter(symbol == gene_symbol) %>%
@@ -167,31 +196,7 @@ parse_saturnDTU_conditions <- function(se) {
   
   tibble::tibble(
     column_name = dtu_cols[valid],
-    cd1 = condition_df[valid, 2],
-    cd2 = condition_df[valid, 3]
-  )
-}
-
-get_dtu_column_name <- function(se, cd1, cd2) {
-  # All column names in rowData
-  rd_names <- names(SummarizedExperiment::rowData(se))
-  
-  # Build the two possible column names
-  direct <- paste0("fitDTUResult_", cd2, "_vs_", cd1)
-  reverse <- paste0("fitDTUResult_", cd1, "_vs_", cd2)
-  
-  # Try direct match
-  if (direct %in% rd_names) {
-    return(direct)
-  }
-  
-  # Try reverse match
-  if (reverse %in% rd_names) {
-    return(reverse)
-  }
-  
-  # Not found
-  stop(
-    sprintf("No DTU result found for '%s vs %s' or '%s vs %s'", cd2, cd1, cd1, cd2)
+    cd2 = condition_df[valid, 2],
+    cd1 = condition_df[valid, 3]
   )
 }
